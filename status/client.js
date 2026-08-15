@@ -232,18 +232,45 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 可折叠区块：<details> 原生折叠（点击标题展开/收起），默认收起。
-		 * 每个区块独立折叠，刷新后状态重置为收起。
+		 * data-dsh-cm-section 标记区块身份，供轮询刷新时保留用户手动展开/收起的状态。
+		 * @param key - 区块唯一标识（skills / rules / mcp）。
+		 * @param title - 区块标题。
+		 * @param count - 计数文案。
 		 * @returns {string} 区块起始标签（含标题行）。
 		 */
-		function sectionOpen(title, count) {
+		function sectionOpen(key, title, count) {
 			return (
-				'<details style="margin:12px 0 8px;">' +
+				'<details data-dsh-cm-section="' + esc(key) + '" style="margin:12px 0 8px;">' +
 				'<summary style="cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none;list-style:none;">' +
 				'<span style="display:inline-flex;transition:transform .2s ease;">▸</span>' +
 				'<strong style="font-size:13px;">' + esc(title) + "</strong>" +
 				'<span style="font-size:12px;color:var(--dsh-cm-text-3);">' + esc(count) + "</span>" +
 				"</summary>"
 			)
+		}
+
+		/**
+		 * 记录当前各折叠区块的展开状态（渲染前调用，重建后恢复）。
+		 * 5 秒轮询会重建 innerHTML，若不保留状态，用户手动展开的区块会被重置为默认收起。
+		 * @param panel - 面板容器。
+		 * @returns {Object} key → open 布尔值的映射。
+		 */
+		function captureSectionState(panel) {
+			var state = {}
+			var sections = panel.querySelectorAll("[data-dsh-cm-section]")
+			for (var i = 0; i < sections.length; i++) {
+				state[sections[i].getAttribute("data-dsh-cm-section")] = sections[i].open
+			}
+			return state
+		}
+
+		/** 把记录的展开状态应用到重建后的区块（只处理记录过的 key）。 */
+		function restoreSectionState(panel, state) {
+			var sections = panel.querySelectorAll("[data-dsh-cm-section]")
+			for (var i = 0; i < sections.length; i++) {
+				var key = sections[i].getAttribute("data-dsh-cm-section")
+				if (key in state) sections[i].open = state[key]
+			}
 		}
 
 		/** 折叠区块结束标签。 */
@@ -257,6 +284,8 @@ window.__ModuleLoader__.load({
 				panel.innerHTML = '<div style="color:var(--dsh-cm-text-2);">' + T.error + "</div>"
 				return
 			}
+			// 渲染前记录各折叠区块的展开状态（轮询刷新时保留用户手动展开/收起）
+			var sectionState = captureSectionState(panel)
 			// 头部：标题 + 刷新（带旋转动画）+ 关闭（✕）
 			var head =
 				'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
@@ -273,7 +302,7 @@ window.__ModuleLoader__.load({
 
 			// Skills（可折叠）
 			var skillsBlock =
-				sectionOpen(T.sectionSkills, data.skills ? data.skills.length + " " + T.skillCount : "0")
+				sectionOpen("skills", T.sectionSkills, data.skills ? data.skills.length + " " + T.skillCount : "0")
 				+ (data.skills && data.skills.length > 0
 					? data.skills.map(renderSkill).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
@@ -281,7 +310,7 @@ window.__ModuleLoader__.load({
 
 			// Rules（可折叠）
 			var rulesBlock =
-				sectionOpen(T.sectionRules, data.rules ? data.rules.length + " " + T.ruleCount : "0")
+				sectionOpen("rules", T.sectionRules, data.rules ? data.rules.length + " " + T.ruleCount : "0")
 				+ (data.rules && data.rules.length > 0
 					? data.rules.map(renderRule).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
@@ -293,13 +322,16 @@ window.__ModuleLoader__.load({
 				" · 连接中 " + (data.summary ? data.summary.mcpConnecting || 0 : 0) +
 				" · 禁用 " + (data.summary ? data.summary.mcpDisabled : 0)
 			var mcpBlock =
-				sectionOpen(T.sectionMcp, mcpSummary)
+				sectionOpen("mcp", T.sectionMcp, mcpSummary)
 				+ (data.mcpServers && data.mcpServers.length > 0
 					? data.mcpServers.map(renderMcp).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
 				+ sectionClose()
 
 			panel.innerHTML = head + skillsBlock + rulesBlock + mcpBlock
+
+			// 重建后恢复各折叠区块的展开状态（保持用户手动设置）
+			restoreSectionState(panel, sectionState)
 
 			var refreshBtn = panel.querySelector("[data-dsh-cm-refresh]")
 			if (refreshBtn) {
