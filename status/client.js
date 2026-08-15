@@ -22,6 +22,9 @@ window.__ModuleLoader__.load({
 		/** 轮询刷新间隔（毫秒）。 */
 		var REFRESH_MS = 5000;
 
+		/** 刷新按钮图标最短旋转时长（毫秒）：数据返回太快时也至少转满此时间，保证动画可见。 */
+		var MIN_SPIN_MS = 600;
+
 		/** 看板 API（host 端 src/index.js 注册）。 */
 		var API = "/api/dsh-claude-dashboard";
 
@@ -77,7 +80,10 @@ window.__ModuleLoader__.load({
 			"--dsh-cm-yellow:#ffb84d;--dsh-cm-yellow-bg:rgba(255,184,77,.12);--dsh-cm-yellow-border:rgba(255,184,77,.4);" +
 			"--dsh-cm-gray:#8ea3c4;--dsh-cm-gray-bg:rgba(142,163,196,.12);--dsh-cm-gray-border:rgba(142,163,196,.35);" +
 			"--dsh-cm-shadow:0 8px 30px rgba(0,0,0,.4);" +
-			"}";
+			"}" +
+			// 刷新按钮旋转动画：图标无限旋转，直到数据返回渲染（innerHTML 重建自动停止）
+			"@keyframes dsh-cm-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}" +
+			"[data-dsh-cm-refresh-icon].dsh-cm-spinning{animation:dsh-cm-spin .7s linear infinite;display:inline-flex;}";
 
 		/** 注入主题样式（幂等）。 */
 		function ensureTheme() {
@@ -245,7 +251,7 @@ window.__ModuleLoader__.load({
 				'<strong style="display:flex;align-items:center;gap:6px;">' + ICON + " " + esc(T.entry) + "</strong>" +
 				'<span style="display:flex;align-items:center;gap:6px;">' +
 				'<button data-dsh-cm-refresh title="' + T.refresh + '" style="display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid var(--dsh-cm-border);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px;color:inherit;">' +
-				'<span data-dsh-cm-refresh-icon style="display:inline-flex;transition:transform .4s ease;">↻</span>' +
+				'<span data-dsh-cm-refresh-icon style="display:inline-flex;">↻</span>' +
 				T.refresh + "</button>" +
 				'<button data-dsh-cm-close title="' + T.close + '" style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:none;border:none;border-radius:6px;cursor:pointer;font-size:14px;color:var(--dsh-cm-text-2);">✕</button>' +
 				"</span></div>" +
@@ -283,9 +289,9 @@ window.__ModuleLoader__.load({
 			var refreshBtn = panel.querySelector("[data-dsh-cm-refresh]")
 			if (refreshBtn) {
 				refreshBtn.addEventListener("click", function () {
-					// 刷新图标旋转动画
+					// 刷新动画：图标加 spinning class 无限旋转，直到数据返回渲染（重建 DOM 自动停止）
 					var icon = panel.querySelector("[data-dsh-cm-refresh-icon]")
-					if (icon) icon.style.transform = "rotate(360deg)"
+					if (icon) icon.classList.add("dsh-cm-spinning")
 					refreshPanel(panel)
 				})
 			}
@@ -297,12 +303,20 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** 拉取一次看板数据并渲染。 */
+		/**
+		 * 拉取一次看板数据并渲染。
+		 * 保证刷新动画最短可见时长：数据返回后若不足 MIN_SPIN_MS，延迟到满再渲染。
+		 */
 		function refreshPanel(panel) {
+			var start = Date.now()
+			var render = function (data) {
+				var wait = Math.max(0, MIN_SPIN_MS - (Date.now() - start))
+				setTimeout(function () { renderPanel(panel, data) }, wait)
+			}
 			fetch(API, { headers: { accept: "application/json" } })
 				.then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json() })
-				.then(function (data) { renderPanel(panel, data) })
-				.catch(function () { renderPanel(panel, undefined) })
+				.then(render)
+				.catch(function () { render(undefined) })
 		}
 
 		/** 面板显示状态切换。 */
