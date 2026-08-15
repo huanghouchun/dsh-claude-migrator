@@ -576,34 +576,125 @@ function collectSkillDefinitions(roots) {
 }
 
 /**
- * 注册 skills 进 DSH skill 注册表（ctx.skills.register），供模型在对话中按
- * whenToUse/description 自动唤醒。
+ * 根据 cwd 找到所属的注册工作区路径（路径前缀匹配，最长的命中）。
+ * DSH 模型调用 skill provider 的 list({cwd}) 时 cwd 是当前会话的工作目录，
+ * 用它匹配 workspaceRegistry 里注册的工作区，实现「按工作区隔离唤醒」。
+ * @param ctx - cordis 上下文。
+ * @param cwd - 当前工作目录。
+ * @returns 匹配的工作区绝对路径，或 undefined（未命中任何注册工作区）。
+ */
+function matchWorkspaceByCwd(ctx, cwd) {
+  if (typeof cwd !== 'string' || !cwd) return undefined
+  let best = undefined
+  const norm = (p) => p.replace(/[\\/]+$/, '')
+  for (const ws of listRegisteredWorkspaces(ctx)) {
+    const wsNorm = norm(ws)
+    if (!best || wsNorm.length > best.length) {
+      if (norm(cwd) === wsNorm || norm(cwd).startsWith(wsNorm + '\\') || norm(cwd).startsWith(wsNorm + '/')) {
+        best = ws
+      }
+    }
+  }
+  return best
+}
+
+/**
+ * 注册 skills 供模型按 whenToUse/description 自动唤醒 —— 用 **provider 机制**。
  *
- * 注册范围：**用户级 + 所有工作区级 + 插件级**。
- *   - 用户级：~/.agents/skills、~/.claude/skills（全局配置中心）
- *   - 工作区级：各工作区 .claude/skills、.dsh/dsh-claude-migrator/skills
- *     —— DSH 原生 dsh-skill-filesystem 只扫 .dsh/skills 与 .agents/skills，
- *        不认 .claude/skills，所以这里必须注册，否则项目级 Claude skill 无法唤醒。
- *   - 插件级：插件自带 skills/
- * 注册是进程级、全局生效的：模型在任意工作区都能按描述唤醒这些 skill。
- * 看板的「按当前工作区隔离」展示不受影响（那是 buildDashboard 的视图逻辑）。
+ * 为什么不用 ctx.skills.register：register 是进程级全局注册，注册后所有工作区
+ * 都能唤醒，导致「跨工作区调用 skill」；而 registerProvider 让 DSH 在每次查询时
+ * 携带当前会话的 cwd，list({cwd}) 据此只返回**当前工作区 + 用户级 + 插件级**的 skill，
+ * 实现与看板一致的按工作区隔离唤醒。
+ *
+ * provider 契约（与官方 dsh-skill-filesystem 相同）：
+ *   ctx.skills.registerProvider((control) => ({
+ *     async list(options)            // options.cwd 选择扫描根
+ *     async get(candidate, options)  // 读取完整正文
+ *   }))
  * @param ctx - cordis 上下文（含 skills 服务）。
  * @returns 卸载函数数组。
  */
 function registerPluginSkills(ctx) {
   const disposers = []
-  // 用户级 + 全部工作区级 + 插件级（必须传 {root, label} 对象数组，scanSkills 依赖 label 解构）
-  const roots = [
-    ...workspaceConfigRoots(ctx),
+  // 用户级 + 插件级是固定根；工作区级按 cwd 动态选择（list 内完成）
+  const staticRoots = [
     ...userConfigRoots(),
     { root: join(__dirname, '..'), label: 'plugin' },
   ]
-  const definitions = collectSkillDefinitions(roots)
-  for (const def of definitions) {
+  // 每个候选的来源层级缓存（name → sourceLevel），供 get 使用
+  const levelByName = new Map()
+
+  /** 按 cwd 组装本次要扫描的根（当前工作区 + 用户级 + 插件级）。 */
+  function rootsForCwd(cwd) {
+    const wsPath = matchWorkspaceByCwd(ctx, cwd)
+    const roots = []
+    if (wsPath) {
+      roots.push({ root: wsPath, label: 'workspace-root(.claude/.mcp.json)' })
+      roots.push({ root: join(wsPath, '.dsh', 'dsh-claude-migrator'), label: 'workspace-ext(.dsh/dsh-claude-migrator)' })
+    }
+    return [...roots, ...staticRoots]
+  }
+
+  try {
+    const disposeProvider = ctx.skills.registerProvider((control) => {
+      // 生命周期：control.signal abort 时无需显式清理（本 provider 无 watcher）
+      return {
+        // provider 名称：注册表标识（不能与运行时保留名冲突）
+        name: 'claude-migrator',
+        /**
+         * 返回候选 skill 摘要。cwd 决定扫描哪个工作区：当前工作区的
+         * .claude/skills、.dsh/dsh-claude-migrator/skills + 用户级 + 插件级。
+         */
+        async list(options) {
+          const cwd = options?.cwd
+          const roots = rootsForCwd(cwd)
+          const scanned = scanSkills(roots)
+          return scanned.map((s) => {
+            levelByName.set(s.name, s.sourceLevel)
+            return {
+              name: s.name,
+              description: s.description || `skill ${s.name}`,
+              ...s.whenToUse ? { whenToUse: s.whenToUse } : {},
+              provider: 'claude-migrator',
+              source: s.sourceLevel,
+              rank: s.sourceLevel === 'workspace' ? 110 : s.sourceLevel === 'user' ? 120 : 130,
+              locator: { path: s.path, directory: dirname(s.path) },
+            }
+          })
+        },
+        /**
+         * 读取选中 skill 的完整正文（去 frontmatter），供模型加载。
+         */
+        async get(candidate, options) {
+          const path = candidate?.locator?.path
+          if (typeof path !== 'string' || !existsSync(path)) return undefined
+          const content = readFileSync(path, 'utf8')
+          const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+          return {
+            name: candidate.name,
+            description: candidate.description,
+            ...candidate.whenToUse ? { whenToUse: candidate.whenToUse } : {},
+            provider: 'claude-migrator',
+            source: levelByName.get(candidate.name) ?? candidate.source,
+            resourceBase: { kind: 'directory', path: candidate.locator.directory },
+            path,
+            content: body,
+          }
+        },
+      }
+    })
+    disposers.push(disposeProvider)
+  } catch (error) {
+    ctx.logger?.warn(`dsh-claude-migrator: register skill provider failed: ${String(error?.message ?? error)}`)
+    // provider 不可用（老版本 skills 服务）时降级为全局 register，保证仍能唤醒
     try {
-      disposers.push(ctx.skills.register(def))
-    } catch (error) {
-      ctx.logger?.warn(`dsh-claude-migrator: register skill "${def.name}" failed: ${String(error?.message ?? error)}`)
+      const fallbackRoots = rootsForCwd(undefined)
+      const definitions = collectSkillDefinitions(fallbackRoots)
+      for (const def of definitions) {
+        disposers.push(ctx.skills.register(def))
+      }
+    } catch (fallbackError) {
+      ctx.logger?.warn(`dsh-claude-migrator: register skill fallback failed: ${String(fallbackError?.message ?? fallbackError)}`)
     }
   }
   return disposers
