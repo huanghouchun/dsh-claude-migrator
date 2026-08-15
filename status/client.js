@@ -141,17 +141,16 @@ window.__ModuleLoader__.load({
 			return true
 		}
 
-		/** 找到对话列（面板挂载点）。 */
-		function conversationColumn() {
-			return document.querySelector('[data-pane="conversation"], [class*="conversationCol"]') ?? undefined
-		}
-
-		/** 创建面板容器。 */
+		/**
+		 * 创建面板容器。
+		 * 挂到 document.body 并 position:fixed —— DSH 切换会话/流式渲染会重渲染对话列，
+		 * 若面板挂在对话列里会被一起清除（表现为「面板自动关闭」）；挂 body 后不受影响。
+		 */
 		function createPanel() {
 			var div = document.createElement("div")
 			div.dataset.dshCmPanel = ""
 			div.style.cssText =
-				"position:absolute;right:12px;top:64px;z-index:60;width:460px;max-width:calc(100vw - 24px);max-height:74vh;overflow:auto;" +
+				"position:fixed;right:12px;top:64px;z-index:2147483600;width:460px;max-width:calc(100vw - 24px);max-height:74vh;overflow:auto;" +
 				"background:var(--dsh-cm-bg);border:1px solid var(--dsh-cm-border);border-radius:12px;" +
 				"box-shadow:var(--dsh-cm-shadow);padding:14px;display:none;font-size:13px;line-height:1.55;" +
 				"color:var(--dsh-cm-text);"
@@ -335,8 +334,12 @@ window.__ModuleLoader__.load({
 				.catch(function () { render(undefined) })
 		}
 
-		/** 面板显示状态切换。 */
+		/**
+		 * 面板显示状态切换。
+		 * 同时同步 controller.open —— 关闭按钮/菜单/入口共用同一状态，避免状态漂移。
+		 */
 		function setPanelOpen(panel, open, controller) {
+			controller.open = open
 			panel.style.display = open ? "block" : "none"
 			if (open && !controller.timer) {
 				refreshPanel(panel)
@@ -362,9 +365,10 @@ window.__ModuleLoader__.load({
 
 			/** 切换看板面板（侧边栏入口与工作区菜单共用）。 */
 			function togglePanel() {
-				controller.open = !controller.open
 				var panel = document.querySelector(PANEL_SELECTOR)
-				if (panel) setPanelOpen(panel, controller.open, controller)
+				if (!panel) return
+				// 状态翻转由 setPanelOpen 统一维护（含 controller.open 同步）
+				setPanelOpen(panel, !controller.open, controller)
 			}
 
 			/**
@@ -421,12 +425,12 @@ window.__ModuleLoader__.load({
 						placeEntry(root, entry)
 					}
 					var panel = document.querySelector(PANEL_SELECTOR)
-					if (!panel) {
-						var column = conversationColumn()
-						if (column !== undefined) {
-							panel = createPanel()
-							column.appendChild(panel)
-						}
+					if (!panel && document.body) {
+						// 面板挂 document.body：避免 DSH 重渲染对话列时把面板一起清掉（自动关闭 bug）
+						panel = createPanel()
+						document.body.appendChild(panel)
+						// 若此前是打开状态（面板曾被外部清掉重建），恢复显示并续上轮询
+						if (controller.open) setPanelOpen(panel, true, controller)
 					}
 				} catch (error) {
 					console.warn("[dsh-claude-migrator] mount failed:", error)
