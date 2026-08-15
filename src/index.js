@@ -201,13 +201,14 @@ function isSkillDir(dir) {
  * 每个 root 兼容两种布局：
  *   A) root 本身是配置区（如 <项目>/.dsh/dsh-claude-migrator/）：查 root/skills、root/.claude/skills
  *   B) root 是插件/项目根：查 root/.dsh/dsh-claude-migrator/skills、root/.dsh/skills、root/.claude/skills、root/skills
- * @param roots - 要扫描的根目录数组。
- * @returns {Array<{name, description, whenToUse, path}>}
+ * 依据 root 的 label 标注来源层级：user-* → 全局（用户目录）、workspace-* → 项目（当前工作区）、plugin → 插件。
+ * @param roots - 要扫描的根目录数组（元素为 {root, label}）。
+ * @returns {Array<{name, description, whenToUse, path, source}>}
  */
 function scanSkills(roots) {
   const out = []
   const seen = new Set()
-  for (const root of roots) {
+  for (const { root, label } of roots) {
     if (!existsSync(root)) continue
     const tryRoots = [
       // A) root 即配置区
@@ -221,6 +222,8 @@ function scanSkills(roots) {
       join(root, '.agents', 'skills'),
       join(root, 'skills'),
     ]
+    // 来源层级：user-* → 全局，workspace-* → 项目，其余（plugin）→ 插件
+    const source = label?.startsWith('user-') ? 'user' : label?.startsWith('workspace-') ? 'workspace' : 'plugin'
     for (const dir of tryRoots) {
       if (!existsSync(dir)) continue
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -241,7 +244,7 @@ function scanSkills(roots) {
         const name = meta.name || entry.name.replace(/\.md$/, '')
         if (seen.has(name)) continue
         seen.add(name)
-        out.push({ name, description: meta.description || '', whenToUse: meta.whenToUse || '', path: filePath })
+        out.push({ name, description: meta.description || '', whenToUse: meta.whenToUse || '', path: filePath, sourceLevel: source })
       }
     }
   }
@@ -251,9 +254,11 @@ function scanSkills(roots) {
 /**
  * 扫描 import/ 下的 rules，并转换为 DSH skill 格式写到 import/.dsh-rules/。
  * rule 的 paths frontmatter 语义保留在 whenToUse 中。
- * @returns {Array<{name, description, whenToUse, source}>}
+ * @param root - 配置根目录。
+ * @param label - 根目录的层级标识（user-* / workspace-* / plugin），用于标注来源。
+ * @returns {Array<{name, description, whenToUse, source, sourceLevel}>}
  */
-function scanAndConvertRules(root) {
+function scanAndConvertRules(root, label) {
   const out = []
   const ruleRoots = [
     // A) root 即配置区
@@ -265,6 +270,7 @@ function scanAndConvertRules(root) {
     join(root, '.claude', 'rules'),
     join(root, 'rules'),
   ]
+  const sourceLevel = label?.startsWith('user-') ? 'user' : label?.startsWith('workspace-') ? 'workspace' : 'plugin'
   let sourceDir
   for (const dir of ruleRoots) {
     if (existsSync(dir)) { sourceDir = dir; break }
@@ -289,7 +295,7 @@ function scanAndConvertRules(root) {
     mkdirSync(skillDir, { recursive: true })
     const skill = `---\nname: ${ruleName}\ndescription: ${meta.description || base} 的编码规则（源自 Claude rule）。\nwhenToUse: ${whenToUse}\n---\n\n${body}`
     writeFileSync(join(skillDir, 'SKILL.md'), skill, 'utf8')
-    out.push({ name: ruleName, description: meta.description || '', whenToUse, source: entry.name })
+    out.push({ name: ruleName, description: meta.description || '', whenToUse, source: entry.name, sourceLevel })
   }
   return out
 }
@@ -360,6 +366,8 @@ function collectStaticMcp(loader) {
       command: config.command,
       url: config.url,
       args: (config.args ?? []).map((a) => (a && typeof a === 'object' && '__jsExpr' in a ? `(${a.__jsExpr})` : String(a))),
+      // 静态 cordis 配置视为全局/插件级（进程级生效，不属于任何单个项目）
+      sourceLevel: 'plugin',
     })
   }
   return out
@@ -466,12 +474,11 @@ async function registerDynamicMcp(ctx) {
 export function buildDashboard(ctx, wsPath) {
   // 扫描全部层级：当前工作区（.dsh/.claude）+ 用户全局（.agents/.claude）+ 插件级（skills/ 与 import/）
   const roots = allConfigRoots(ctx, wsPath)
-  const scanRoots = roots.map((r) => r.root)
-  const allSkills = scanSkills(scanRoots)
+  const allSkills = scanSkills(roots)
   // rules：各层 .dsh/rules、.claude/rules 转 skill + rule-* 目录（rule- 前缀归入 rules 区块）
   const convertedRules = []
   for (const r of roots) {
-    for (const rule of scanAndConvertRules(r.root)) {
+    for (const rule of scanAndConvertRules(r.root, r.label)) {
       if (!convertedRules.some((x) => x.name === rule.name)) convertedRules.push(rule)
     }
   }
@@ -480,13 +487,17 @@ export function buildDashboard(ctx, wsPath) {
   const rules = [
     ...convertedRules,
     ...builtinRules.filter((s) => !convertedRules.some((r) => r.name === s.name))
-      .map((s) => ({ name: s.name, description: s.description, whenToUse: s.whenToUse, source: '内置' })),
+      .map((s) => ({ name: s.name, description: s.description, whenToUse: s.whenToUse, source: '内置', sourceLevel: s.sourceLevel })),
   ]
-  // .mcp.json：各层都查（workspace .dsh/mcp.json 优先）
+  // .mcp.json：各层都查（workspace .dsh/mcp.json 优先），记录命中层级
   let mcpJson = null
+  let mcpSourceLevel = 'plugin'
   for (const r of roots) {
     mcpJson = readMcpJson(r.root)
-    if (mcpJson) break
+    if (mcpJson) {
+      mcpSourceLevel = r.label?.startsWith('user-') ? 'user' : r.label?.startsWith('workspace-') ? 'workspace' : 'plugin'
+      break
+    }
   }
   const toolsByServer = collectMcpTools(ctx.tools)
   const staticMcp = collectStaticMcp(ctx.loader)
@@ -502,6 +513,7 @@ export function buildDashboard(ctx, wsPath) {
           command: cfg.command,
           url: cfg.url,
           args: cfg.args ?? [],
+          sourceLevel: mcpSourceLevel,
         })
       }
     }
@@ -525,6 +537,8 @@ export function buildDashboard(ctx, wsPath) {
   return {
     importRoot: IMPORT_ROOT,
     workspaceRoot: findWorkspaceRoot(),
+    // 当前工作区（隔离视图的根；未指定时为 undefined）
+    currentWorkspace: wsPath,
     // 仅列出当前扫描的工作区（隔离视图）
     workspaces: wsPath ? [wsPath] : listRegisteredWorkspaces(ctx),
     skills,

@@ -61,6 +61,8 @@ window.__ModuleLoader__.load({
 			ruleCount: "rules",
 			mcpCount: "mcp",
 			importRoot: "导入目录",
+			currentWorkspace: "当前工作区",
+			noWorkspace: "未选择工作区",
 		};
 
 		/**
@@ -184,11 +186,33 @@ window.__ModuleLoader__.load({
 			)
 		}
 
+		/**
+		 * 来源层级徽标（全局 / 项目 / 插件）。
+		 * 依据 host 端 sourceLevel 字段：user → 全局（用户目录）、workspace → 项目（当前工作区）、plugin → 插件。
+		 */
+		function sourceBadge(sourceLevel) {
+			var map = {
+				user: ["var(--dsh-cm-green)", "var(--dsh-cm-green-bg)", "var(--dsh-cm-green-border)", "全局"],
+				workspace: ["var(--dsh-cm-yellow)", "var(--dsh-cm-yellow-bg)", "var(--dsh-cm-yellow-border)", "项目"],
+				plugin: ["var(--dsh-cm-gray)", "var(--dsh-cm-gray-bg)", "var(--dsh-cm-gray-border)", "插件"],
+			}
+			var m = map[sourceLevel] || map.plugin
+			return (
+				'<span style="display:inline-flex;align-items:center;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;' +
+				"color:" + m[0] + ";background:" + m[1] + ";border:1px solid " + m[2] + ';">' +
+				esc(m[3]) +
+				"</span>"
+			)
+		}
+
 		/** 渲染一个 skill 卡片。 */
 		function renderSkill(skill) {
 			return (
 				'<div style="padding:7px 9px;border:1px solid var(--dsh-cm-border);border-radius:8px;margin-bottom:6px;">' +
-				'<div style="font-weight:600;word-break:break-all;">' + esc(skill.name) + "</div>" +
+				'<div style="display:flex;align-items:center;gap:6px;">' +
+				'<span style="font-weight:600;word-break:break-all;">' + esc(skill.name) + "</span>" +
+				'<span style="margin-left:auto;flex-shrink:0;">' + sourceBadge(skill.sourceLevel) + "</span>" +
+				"</div>" +
 				(skill.description ? '<div style="margin-top:3px;font-size:12px;color:var(--dsh-cm-text-2);">' + esc(skill.description) + "</div>" : "") +
 				(skill.whenToUse ? '<div style="margin-top:3px;font-size:12px;color:var(--dsh-cm-text-3);">' + esc(skill.whenToUse) + "</div>" : "") +
 				"</div>"
@@ -199,7 +223,10 @@ window.__ModuleLoader__.load({
 		function renderRule(rule) {
 			return (
 				'<div style="padding:7px 9px;border:1px solid var(--dsh-cm-border);border-radius:8px;margin-bottom:6px;">' +
-				'<div style="font-weight:600;word-break:break-all;">' + esc(rule.name) + "</div>" +
+				'<div style="display:flex;align-items:center;gap:6px;">' +
+				'<span style="font-weight:600;word-break:break-all;">' + esc(rule.name) + "</span>" +
+				'<span style="margin-left:auto;flex-shrink:0;">' + sourceBadge(rule.sourceLevel) + "</span>" +
+				"</div>" +
 				(rule.whenToUse ? '<div style="margin-top:3px;font-size:12px;color:var(--dsh-cm-text-3);">' + esc(rule.whenToUse) + "</div>" : "") +
 				(rule.source ? '<div style="margin-top:2px;font-size:11px;color:var(--dsh-cm-text-3);">来源: ' + esc(rule.source) + "</div>" : "") +
 				"</div>"
@@ -225,6 +252,7 @@ window.__ModuleLoader__.load({
 				'<div style="padding:8px 10px;border:1px solid var(--dsh-cm-border);border-radius:8px;margin-bottom:8px;">' +
 				'<div style="display:flex;align-items:center;gap:8px;">' +
 				"<strong>" + esc(server.serverName) + "</strong>" +
+				sourceBadge(server.sourceLevel) +
 				'<span style="margin-left:auto;">' + statusBadge(server.status, label) + "</span>" +
 				"</div>" +
 				'<div style="margin-top:4px;font-size:12px;color:var(--dsh-cm-text-2);word-break:break-all;">transport: ' + esc(server.transport) + (location ? " · " + esc(location) : "") + "</div>" +
@@ -298,9 +326,28 @@ window.__ModuleLoader__.load({
 				'<span data-dsh-cm-refresh-icon style="display:inline-flex;">↻</span>' +
 				T.refresh + "</button>" +
 				'<button data-dsh-cm-close title="' + T.close + '" style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:none;border:none;border-radius:6px;cursor:pointer;font-size:14px;color:var(--dsh-cm-text-2);">✕</button>' +
-				"</span></div>" +
-				'<div style="font-size:12px;color:var(--dsh-cm-text-3);margin-bottom:8px;">' +
-				(data.summary ? data.summary.skills + " " + T.skillCount + " / " + data.summary.rules + " " + T.ruleCount + " / " + data.summary.mcp + " " + T.mcpCount : "") +
+				"</span></div>"
+			// 当前工作区 + 汇总（含来源统计）
+			var wsName = T.noWorkspace
+			if (data.currentWorkspace) {
+				wsName = String(data.currentWorkspace).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || data.currentWorkspace
+			}
+			var countLine = data.summary ? data.summary.skills + " " + T.skillCount + " / " + data.summary.rules + " " + T.ruleCount + " / " + data.summary.mcp + " " + T.mcpCount : ""
+			var userSkills = data.skills ? data.skills.filter(function (s) { return s.sourceLevel === "user" }).length : 0
+			var wsSkills = data.skills ? data.skills.filter(function (s) { return s.sourceLevel === "workspace" }).length : 0
+			var sourceLine = ""
+			if (data.skills && data.skills.length > 0) {
+				sourceLine =
+					'<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;">' +
+					sourceBadge("user") + " " + userSkills +
+					sourceBadge("workspace") + " " + wsSkills +
+					"</span>"
+			}
+			head +=
+				'<div style="display:flex;align-items:center;font-size:12px;color:var(--dsh-cm-text-3);margin-bottom:8px;">' +
+				'<strong style="color:var(--dsh-cm-text-2);">' + esc(T.currentWorkspace) + ': </strong>' +
+				'<span style="word-break:break-all;">' + esc(wsName) + "</span>" +
+				'<span style="margin-left:auto;white-space:nowrap;">' + esc(countLine) + sourceLine + "</span>" +
 				"</div>"
 
 			// Skills（可折叠）
@@ -542,6 +589,34 @@ window.__ModuleLoader__.load({
 			})
 			observer.observe(rootNode, { childList: true, subtree: true })
 			disposers.push(function () { observer.disconnect() })
+
+			/**
+			 * 监听工作区/会话变化：点击切换工作区（或新建/切换会话）时，
+			 * 若当前工作区路径变化，立即刷新看板 —— 实现「点击工作区即切换配置视图」。
+			 * 面板未打开时也记录变化，打开后首次刷新自然使用最新工作区。
+			 */
+			try {
+				var lastWs = resolveCurrentWorkspacePath()
+				var onWsChange = function () {
+					var next = resolveCurrentWorkspacePath()
+					if (next === lastWs) return
+					lastWs = next
+					var panel = document.querySelector(PANEL_SELECTOR)
+					if (panel && panelController && panelController.open) refreshPanel(panel)
+				}
+				var unsubWs = null
+				var unsubSessions = null
+				if (window.__dshCmWsContext && window.__dshCmWsContext.workspaces && typeof window.__dshCmWsContext.workspaces.list.subscribe === "function") {
+					unsubWs = window.__dshCmWsContext.workspaces.list.subscribe(onWsChange)
+				}
+				if (window.__dshCmWsContext && window.__dshCmWsContext.sessions && typeof window.__dshCmWsContext.sessions.list.subscribe === "function") {
+					unsubSessions = window.__dshCmWsContext.sessions.list.subscribe(onWsChange)
+				}
+				if (unsubWs) disposers.push(unsubWs)
+				if (unsubSessions) disposers.push(unsubSessions)
+			} catch (error) {
+				console.warn("[dsh-claude-migrator] workspace change subscription failed:", error)
+			}
 
 			ctx.effect(function () {
 				return function () {
