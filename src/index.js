@@ -17,6 +17,10 @@
 import { readFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+
+// ESM 下的 require 桥（用于同步加载 CJS hooks）
+const hookRequire = createRequire(import.meta.url)
 
 // 插件自身目录（ESM 下基于 import.meta.url 解析）
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -24,6 +28,55 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 export const IMPORT_ROOT = join(__dirname, '..', 'import')
 // 内置 skills 根目录：插件目录/skills
 export const SKILLS_ROOT = join(__dirname, '..', 'skills')
+
+/**
+ * 发现当前工作区（workspace）根目录。
+ * 规则：从 process.cwd() 逐级向上找最近的 .git 目录，命中的父目录即项目根；
+ * 找不到则退回 process.cwd() 本身。
+ * @returns {string} 项目根目录绝对路径。
+ */
+function findWorkspaceRoot() {
+  let current = process.cwd()
+  // 归一化并向上查找 .git
+  let dir = current
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return current
+}
+
+/**
+ * 工作区配置区根目录：<项目根>/.dsh/dsh-claude-migrator/
+ * 约定结构：
+ *   .dsh/dsh-claude-migrator/skills/    → workspace 级 skills
+ *   .dsh/dsh-claude-migrator/rules/     → workspace 级 rules（自动转 skill）
+ *   .dsh/dsh-claude-migrator/CLAUDE.md  → workspace 级指令
+ *   .dsh/dsh-claude-migrator/hooks/     → workspace 级事件钩子（*.js）
+ *   .dsh/dsh-claude-migrator/.mcp.json  → workspace 级 MCP
+ *   .dsh/dsh-claude-migrator/.claude/   → 兼容的 Claude 迁移来源（skills/rules）
+ * @returns {Array<{root, label}>} 工作区配置根目录数组。
+ */
+function workspaceConfigRoots() {
+  const ws = findWorkspaceRoot()
+  const cfgDir = join(ws, '.dsh', 'dsh-claude-migrator')
+  return [
+    { root: cfgDir, label: 'workspace(.dsh/dsh-claude-migrator)' },
+  ]
+}
+
+/**
+ * 汇总所有扫描根：工作区级 + 插件全局级（skills/ 与 import/）。
+ * @returns {Array<{root, label}>} 全部配置根目录。
+ */
+function allConfigRoots() {
+  return [
+    ...workspaceConfigRoots(),
+    { root: join(__dirname, '..'), label: 'plugin' },
+  ]
+}
 
 /** 看板 API 路由。 */
 export const DASHBOARD_API = '/api/dsh-claude-dashboard'
@@ -81,7 +134,9 @@ function isSkillDir(dir) {
 
 /**
  * 扫描多个根下的 skills（SKILL.md 目录或扁平 md）。
- * 兼容两种布局：内置 skills/ 目录（发布自带）与 import/ 目录（用户拖入）。
+ * 每个 root 兼容两种布局：
+ *   A) root 本身是配置区（如 <项目>/.dsh/dsh-claude-migrator/）：查 root/skills、root/.claude/skills
+ *   B) root 是插件/项目根：查 root/.dsh/dsh-claude-migrator/skills、root/.dsh/skills、root/.claude/skills、root/skills
  * @param roots - 要扫描的根目录数组。
  * @returns {Array<{name, description, whenToUse, path}>}
  */
@@ -91,6 +146,12 @@ function scanSkills(roots) {
   for (const root of roots) {
     if (!existsSync(root)) continue
     const tryRoots = [
+      // A) root 即配置区
+      join(root, 'skills'),
+      join(root, '.claude', 'skills'),
+      // B) root 是项目/插件根
+      join(root, '.dsh', 'dsh-claude-migrator', 'skills'),
+      join(root, '.dsh', 'skills'),
       join(root, '.claude', 'skills'),
       join(root, 'skills'),
     ]
@@ -123,7 +184,16 @@ function scanSkills(roots) {
  */
 function scanAndConvertRules(root) {
   const out = []
-  const ruleRoots = [join(root, '.claude', 'rules'), join(root, 'rules')]
+  const ruleRoots = [
+    // A) root 即配置区
+    join(root, 'rules'),
+    join(root, '.claude', 'rules'),
+    // B) root 是项目/插件根
+    join(root, '.dsh', 'dsh-claude-migrator', 'rules'),
+    join(root, '.dsh', 'rules'),
+    join(root, '.claude', 'rules'),
+    join(root, 'rules'),
+  ]
   let sourceDir
   for (const dir of ruleRoots) {
     if (existsSync(dir)) { sourceDir = dir; break }
@@ -153,9 +223,20 @@ function scanAndConvertRules(root) {
   return out
 }
 
-/** 读取 .mcp.json 配置（存在则解析）。 */
+/** 读取 .mcp.json 配置（存在则解析）。兼容配置区根与项目根布局。 */
 function readMcpJson(root) {
-  const candidates = [join(root, '.mcp.json'), join(root, 'mcp.json')]
+  const candidates = [
+    // A) root 即配置区
+    join(root, '.mcp.json'),
+    join(root, 'mcp.json'),
+    // B) root 是项目/插件根
+    join(root, '.dsh', 'dsh-claude-migrator', '.mcp.json'),
+    join(root, '.dsh', 'dsh-claude-migrator', 'mcp.json'),
+    join(root, '.dsh', 'mcp.json'),
+    join(root, '.dsh', '.mcp.json'),
+    join(root, '.mcp.json'),
+    join(root, 'mcp.json'),
+  ]
   for (const path of candidates) {
     if (existsSync(path)) {
       try {
@@ -209,11 +290,17 @@ function collectStaticMcp(loader) {
 
 /** 汇总看板数据。 */
 export function buildDashboard(ctx) {
-  // 内置 skills/ 目录 + 用户拖入的 import/ 目录
-  const BUILTIN_ROOT = join(__dirname, '..')
-  const allSkills = scanSkills([BUILTIN_ROOT, IMPORT_ROOT])
-  // rules：import/ 下的 .claude/rules 转 skill + 内置 rule-* 目录（rule- 前缀归入 rules 区块）
-  const convertedRules = scanAndConvertRules(IMPORT_ROOT)
+  // 扫描全部层级：workspace 级（.dsh/.claude）+ 插件全局级（skills/ 与 import/）
+  const roots = allConfigRoots()
+  const scanRoots = roots.map((r) => r.root)
+  const allSkills = scanSkills(scanRoots)
+  // rules：各层 .dsh/rules、.claude/rules 转 skill + rule-* 目录（rule- 前缀归入 rules 区块）
+  const convertedRules = []
+  for (const r of roots) {
+    for (const rule of scanAndConvertRules(r.root)) {
+      if (!convertedRules.some((x) => x.name === rule.name)) convertedRules.push(rule)
+    }
+  }
   const builtinRules = allSkills.filter((s) => s.name.startsWith('rule-'))
   const skills = allSkills.filter((s) => !s.name.startsWith('rule-'))
   const rules = [
@@ -221,7 +308,12 @@ export function buildDashboard(ctx) {
     ...builtinRules.filter((s) => !convertedRules.some((r) => r.name === s.name))
       .map((s) => ({ name: s.name, description: s.description, whenToUse: s.whenToUse, source: '内置' })),
   ]
-  const mcpJson = readMcpJson(IMPORT_ROOT)
+  // .mcp.json：各层都查（workspace .dsh/mcp.json 优先）
+  let mcpJson = null
+  for (const r of roots) {
+    mcpJson = readMcpJson(r.root)
+    if (mcpJson) break
+  }
   const toolsByServer = collectMcpTools(ctx.tools)
   const staticMcp = collectStaticMcp(ctx.loader)
 
@@ -258,6 +350,7 @@ export function buildDashboard(ctx) {
 
   return {
     importRoot: IMPORT_ROOT,
+    workspaceRoot: findWorkspaceRoot(),
     skills,
     rules,
     mcpJson: mcpJson ? { path: mcpJson.path, servers: dynamicServers.length } : null,
@@ -300,7 +393,8 @@ function collectSkillDefinitions(roots) {
  */
 function registerPluginSkills(ctx) {
   const disposers = []
-  const definitions = collectSkillDefinitions([SKILLS_ROOT, IMPORT_ROOT])
+  // 扫描全部层级：workspace（.dsh/.claude）+ 插件全局（skills/ 与 import/）
+  const definitions = collectSkillDefinitions(allConfigRoots().map((r) => r.root))
   for (const def of definitions) {
     try {
       disposers.push(ctx.skills.register(def))
@@ -311,7 +405,50 @@ function registerPluginSkills(ctx) {
   return disposers
 }
 
-/** 插件入口：注册看板路由 + 动态挂载插件目录 skills。 */
+/**
+ * 扫描工作区配置区的 hooks 目录并加载事件钩子。
+ * 约定：<workspace>/.dsh/dsh-claude-migrator/hooks/*.js
+ * 每个文件导出：
+ *   - 默认导出函数 `(ctx) => disposer`（拿到 ctx 后自行 ctx.on(...) 注册）
+ *   - 或命名导出 `{ event, handler }`（插件用 ctx.on(event, handler) 注册）
+ * 可钩子事件示例：tools/pre-execute、tools/execute、tools/post-execute、tools/result
+ * @param ctx - cordis 上下文。
+ * @returns 卸载函数数组。
+ */
+function registerWorkspaceHooks(ctx) {
+  const disposers = []
+  const wsRoots = workspaceConfigRoots()
+  for (const { root } of wsRoots) {
+    const hooksDir = join(root, 'hooks')
+    if (!existsSync(hooksDir)) continue
+    for (const entry of readdirSync(hooksDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/\.(js|cjs|mjs)$/.test(entry.name)) continue
+      const hookPath = join(hooksDir, entry.name)
+      try {
+        // 同步 require（CJS）—— .cjs/.js 可同步加载
+        const mod = hookRequire(hookPath)
+        const hook = mod?.default ?? mod
+        if (typeof hook === 'function') {
+          // 形式 1：hook(ctx) → disposer
+          const disposer = hook(ctx)
+          if (typeof disposer === 'function') disposers.push(disposer)
+          ctx.logger?.info(`dsh-claude-migrator: loaded hook ${entry.name} (custom apply)`)
+        } else if (hook && typeof hook.event === 'string' && typeof hook.handler === 'function') {
+          // 形式 2：{ event, handler } → ctx.on(event, handler)
+          disposers.push(ctx.on(hook.event, hook.handler))
+          ctx.logger?.info(`dsh-claude-migrator: loaded hook ${entry.name} (${hook.event})`)
+        } else {
+          ctx.logger?.warn(`dsh-claude-migrator: hook ${entry.name} 需导出函数或 {event, handler}`)
+        }
+      } catch (error) {
+        ctx.logger?.warn(`dsh-claude-migrator: hook ${entry.name} 加载失败: ${String(error?.message ?? error)}`)
+      }
+    }
+  }
+  return disposers
+}
+
+/** 插件入口：注册看板路由 + 动态挂载插件目录 skills + workspace hooks。 */
 export function apply(ctx) {
   const handler = async (req, res) => {
     if (!isLoopbackRequest(req)) {
@@ -340,4 +477,12 @@ export function apply(ctx) {
       for (const dispose of disposers.splice(0)) dispose()
     }
   }, 'dsh-claude-migrator: skills')
+
+  // 加载 workspace 级 hooks（.dsh/dsh-claude-migrator/hooks/*.js）
+  const hookDisposers = registerWorkspaceHooks(ctx)
+  ctx.effect(() => {
+    return () => {
+      for (const dispose of hookDisposers.splice(0)) dispose()
+    }
+  }, 'dsh-claude-migrator: hooks')
 }

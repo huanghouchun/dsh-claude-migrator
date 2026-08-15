@@ -1,18 +1,47 @@
 # dsh-claude-migrator 使用指南
 
-本插件把 Claude 项目的配置（skills / rules / MCP）迁移到 DeepSeek Harness (DSH)。本文档说明：**插件如何使用**、**如何新增一个 skill**、**如何配置一个 MCP**。
+本插件把 Claude 项目的配置（skills / rules / MCP / 指令 / hooks）迁移到 DeepSeek Harness (DSH)，支持**插件全局级**与**workspace 项目级**两种配置区。本文档说明：**插件如何使用**、**如何新增一个 skill**、**如何配置一个 MCP**、**如何配置 workspace 级**。
+
+---
+
+## 〇、两级配置区（先看这个）
+
+dsh-claude-migrator 扫描 **两层** 配置来源，都自动合并加载：
+
+| 层级 | 位置 | 适用 |
+|------|------|------|
+| **插件全局级** | 插件目录 `skills/`、`import/` | 所有项目共享（发布自带 / 全局拖入） |
+| **workspace 项目级** | `<项目根>/.dsh/dsh-claude-migrator/` | 每个项目各自的配置 |
+
+### workspace 配置区结构
+
+```
+你的项目根/
+└── .dsh/
+    └── dsh-claude-migrator/        ← workspace 配置区（随项目 git 管理）
+        ├── skills/                 ← 项目级 skills（.md 或 <name>/SKILL.md）
+        ├── rules/                  ← 项目级 rules（自动转 skill）
+        ├── CLAUDE.md               ← 项目级指令（DSH 原生自动加载，已实测 ✓）
+        ├── hooks/                  ← 项目级事件钩子（*.js / *.cjs）
+        ├── .mcp.json               ← 项目级 MCP 服务器
+        └── .claude/                ← 兼容的 Claude 迁移来源（skills/rules）
+```
+
+> 已验证：`<项目根>/.dsh/dsh-claude-migrator/CLAUDE.md` 会被 DSH 的 `dsh-agent-instructions` **原生自动加载**；`skills/`、`rules/`、`hooks/`、`.mcp.json` 由本插件扫描注册。
 
 ---
 
 ## 一、插件如何工作
 
-插件通过 DSH 的 **bundle patch 层**向 web profile 注入三部分能力：
+插件通过 DSH 的 **bundle patch 层**向 web profile 注入能力：
 
 | 部分 | 载体 | 生效方式 |
 |------|------|----------|
-| 18 个 skills（8 个 Claude skills + 10 条规则） | `skills/` 目录 | 模型对话中按 `whenToUse`/`description` **自动加载** |
-| 9 个 MCP 服务器 | `cordis.patch.yml` 的 `insert` 段 | 以 `mcp__<server>__<tool>` 工具形式供模型调用 |
-| CLAUDE.md / AGENTS.md | 无需处理 | DSH 原生加载（`dsh-agent-instructions`） |
+| skills | 插件 `skills/`、`import/` + workspace `.dsh/dsh-claude-migrator/skills/` | 模型对话中按 `whenToUse`/`description` **自动加载** |
+| rules | workspace `.dsh/dsh-claude-migrator/rules/`（自动转 skill） | 按路径语义自动加载 |
+| MCP 服务器 | `cordis.patch.yml` 静态 + workspace `.dsh/dsh-claude-migrator/.mcp.json` | 以 `mcp__<server>__<tool>` 工具形式供模型调用 |
+| CLAUDE.md / AGENTS.md | 项目根 + `.dsh/dsh-claude-migrator/CLAUDE.md` | DSH 原生加载（`dsh-agent-instructions`） |
+| hooks | workspace `.dsh/dsh-claude-migrator/hooks/*.js` | 启动时注册 DSH 事件钩子 |
 
 **安装后无需手动操作**：模型在对话中根据任务自动引用对应 skill；MCP 工具按需被模型调用。
 
@@ -192,7 +221,79 @@ dsh --profile web --dump-config | grep -A 8 "id: mcp-"
 
 ---
 
-## 六、Claude 迁移看板
+## 四、配置 workspace 级（项目级）
+
+把配置放进 **`<项目根>/.dsh/dsh-claude-migrator/`**，该项目的所有 DSH 会话自动生效（随项目 git 管理，换机器 clone 即带）：
+
+### 4.1 skills（项目级）
+
+```powershell
+# 放 .md 文件（扁平）或 <name>/SKILL.md（目录）
+mkdir "<项目根>\.dsh\dsh-claude-migrator\skills"
+# 复制你的 skill：
+Copy-Item ".claude\skills\my-skill" "<项目根>\.dsh\dsh-claude-migrator\skills\" -Recurse
+```
+
+### 4.2 rules（项目级，自动转 skill）
+
+```powershell
+mkdir "<项目根>\.dsh\dsh-claude-migrator\rules"
+# 放 <name>.md，带 paths frontmatter 自动转 whenToUse
+Copy-Item ".claude\rules\backend.md" "<项目根>\.dsh\dsh-claude-migrator\rules\"
+```
+
+### 4.3 CLAUDE.md（项目级指令）
+
+```powershell
+# 直接放这里即可 —— DSH 原生自动加载（已实测，无需插件处理）
+Copy-Item "CLAUDE.md" "<项目根>\.dsh\dsh-claude-migrator\CLAUDE.md"
+```
+
+### 4.4 hooks（项目级事件钩子）
+
+```powershell
+mkdir "<项目根>\.dsh\dsh-claude-migrator\hooks"
+```
+
+hook 文件支持两种写法（`.js` 或 `.cjs`）：
+
+```js
+// 写法 1：默认导出函数 (ctx) => disposer（最灵活）
+export default function hook(ctx) {
+  const disposer = ctx.on('tools/pre-execute', async (exec) => {
+    console.log('[hook] tool:', exec?.toolName)
+  })
+  return disposer
+}
+```
+
+```js
+// 写法 2：命名导出 { event, handler }
+export const event = 'tools/post-execute'
+export function handler(result) {
+  // 处理工具结果
+}
+```
+
+可监听事件：`tools/pre-execute`、`tools/execute`、`tools/post-execute`、`tools/result`。
+
+### 4.5 MCP（项目级）
+
+```powershell
+# 放 .mcp.json（与 Claude 相同格式）
+Copy-Item ".mcp.json" "<项目根>\.dsh\dsh-claude-migrator\.mcp.json"
+```
+
+### 4.6 .claude（迁移来源）
+
+```powershell
+# 直接把整个 .claude 目录放进来，插件的 skills/rules 扫描兼容此布局
+Copy-Item ".claude" "<项目根>\.dsh\dsh-claude-migrator\.claude" -Recurse
+```
+
+---
+
+## 五、Claude 迁移看板
 
 插件自带一个 **Claude 迁移看板**，让你在 GUI 里直接看到导入的 skills、rules、MCP 及连接状况。
 
@@ -220,7 +321,7 @@ dsh --profile web --dump-config | grep -A 8 "id: mcp-"
 
 ---
 
-## 四、常见问题
+## 六、常见问题
 
 | 问题 | 原因与解决 |
 |------|------------|
@@ -232,7 +333,7 @@ dsh --profile web --dump-config | grep -A 8 "id: mcp-"
 
 ---
 
-## 五、维护约定
+## 七、维护约定
 
 - **skills**：`skills/<name>/SKILL.md`，新增/修改即生效（junction 安装时）。
 - **rules**：`skills/rule-<name>/SKILL.md`，规则内容源自 `.claude/rules/`，改动时两边同步。
