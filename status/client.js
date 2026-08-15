@@ -10,8 +10,10 @@ window.__ModuleLoader__.load({
 		 *
 		 * 手写 window.__ModuleLoader__.load 契约（与官方 dsh-client-modules 同格式），
 		 * 无需构建链。功能：
-		 *   - 侧边栏「Claude 迁移」入口行（纯 DOM，MutationObserver 自愈）
+		 *   - 侧边栏「配置中心」入口行（纯 DOM，MutationObserver 自愈）
 		 *   - 点击弹出完整看板：Skill 列表 / Rules 列表 / MCP 列表与连接状态
+		 *   - 工作区「⋯」更多菜单注入「配置中心看板」菜单项
+		 *   - 面板头部：刷新按钮（带旋转动画）、关闭按钮
 		 *
 		 * 主题适配：所有颜色走 CSS 变量（--dsh-cm-*），并通过 body[data-ds-dark-theme]
 		 * 自动切换深/浅色，与 DSH 主题、皮肤保持一致。
@@ -27,16 +29,20 @@ window.__ModuleLoader__.load({
 		var ENTRY_SELECTOR = "[data-dsh-cm-entry]";
 		var PANEL_SELECTOR = "[data-dsh-cm-panel]";
 
+		/** apply 创建的控制器（供关闭按钮等模块级函数使用）。 */
+		var panelController = undefined;
+
 		/** 侧边栏入口图标（仪表盘）。 */
 		var ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="5.2" height="5.2" rx="1"/><rect x="8.8" y="2" width="5.2" height="3.4" rx="1"/><rect x="8.8" y="8.6" width="5.2" height="5.4" rx="1"/><rect x="2" y="8.6" width="5.2" height="3.2" rx="1"/></svg>';
 
 		/** 中文文案。 */
 		var T = {
-			entry: "Claude 迁移",
-			tooltip: "查看导入的 Claude skills / rules / MCP 与连接状态",
+			entry: "配置中心",
+			tooltip: "查看项目 skills / rules / MCP 与连接状态",
 			loading: "加载中…",
 			error: "加载失败",
 			refresh: "刷新",
+			close: "关闭",
 			connected: "已连接",
 			connecting: "连接中",
 			disabled: "已禁用",
@@ -233,10 +239,18 @@ window.__ModuleLoader__.load({
 				panel.innerHTML = '<div style="color:var(--dsh-cm-text-2);">' + T.error + "</div>"
 				return
 			}
+			// 头部：标题 + 刷新（带旋转动画）+ 关闭（✕）
 			var head =
 				'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
-				"<strong>" + esc(T.entry) + " · " + (data.summary ? data.summary.skills + " " + T.skillCount + " / " + data.summary.rules + " " + T.ruleCount + " / " + data.summary.mcp + " " + T.mcpCount : "") + "</strong>" +
-				'<button data-dsh-cm-refresh style="background:none;border:1px solid var(--dsh-cm-border);border-radius:6px;padding:2px 10px;cursor:pointer;font-size:12px;color:inherit;">' + T.refresh + "</button>" +
+				'<strong style="display:flex;align-items:center;gap:6px;">' + ICON + " " + esc(T.entry) + "</strong>" +
+				'<span style="display:flex;align-items:center;gap:6px;">' +
+				'<button data-dsh-cm-refresh title="' + T.refresh + '" style="display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid var(--dsh-cm-border);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px;color:inherit;">' +
+				'<span data-dsh-cm-refresh-icon style="display:inline-flex;transition:transform .4s ease;">↻</span>' +
+				T.refresh + "</button>" +
+				'<button data-dsh-cm-close title="' + T.close + '" style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:none;border:none;border-radius:6px;cursor:pointer;font-size:14px;color:var(--dsh-cm-text-2);">✕</button>' +
+				"</span></div>" +
+				'<div style="font-size:12px;color:var(--dsh-cm-text-3);margin-bottom:8px;">' +
+				(data.summary ? data.summary.skills + " " + T.skillCount + " / " + data.summary.rules + " " + T.ruleCount + " / " + data.summary.mcp + " " + T.mcpCount : "") +
 				"</div>"
 
 			// Skills
@@ -267,7 +281,20 @@ window.__ModuleLoader__.load({
 			panel.innerHTML = head + skillsBlock + rulesBlock + mcpBlock
 
 			var refreshBtn = panel.querySelector("[data-dsh-cm-refresh]")
-			if (refreshBtn) refreshBtn.addEventListener("click", function () { refreshPanel(panel) })
+			if (refreshBtn) {
+				refreshBtn.addEventListener("click", function () {
+					// 刷新图标旋转动画
+					var icon = panel.querySelector("[data-dsh-cm-refresh-icon]")
+					if (icon) icon.style.transform = "rotate(360deg)"
+					refreshPanel(panel)
+				})
+			}
+			var closeBtn = panel.querySelector("[data-dsh-cm-close]")
+			if (closeBtn) {
+				closeBtn.addEventListener("click", function () {
+					closePanel()
+				})
+			}
 		}
 
 		/** 拉取一次看板数据并渲染。 */
@@ -290,9 +317,17 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** 关闭面板（关闭按钮点击调用）。 */
+		function closePanel() {
+			var panel = document.querySelector(PANEL_SELECTOR)
+			if (panel && panelController) setPanelOpen(panel, false, panelController)
+		}
+
 		/** 插件入口（browser 半面 apply）。 */
 		function apply(ctx) {
 			var controller = { open: false, timer: undefined }
+			// 暴露给模块级 closePanel()（关闭按钮使用）
+			panelController = controller
 			var disposers = []
 
 			/** 切换看板面板（侧边栏入口与工作区菜单共用）。 */
@@ -303,10 +338,10 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
-			 * 往工作区「⋯」更多菜单注入「Claude 迁移看板」菜单项。
+			 * 往工作区「⋯」更多菜单注入「配置中心看板」菜单项。
 			 * DSH 官方菜单项硬编码（重命名/删除），无插件注册接口，因此用 DOM 注入：
 			 * 监听 role="menu" 的菜单容器，若已含「重命名」项（工作区菜单特征）且未注入过，
-			 * 追加一个 role="menuitem" 的「Claude 迁移看板」项。
+			 * 追加一个 role="menuitem" 的「配置中心看板」项。
 			 */
 			function injectWorkspaceMenu() {
 				try {

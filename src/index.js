@@ -283,7 +283,13 @@ function readMcpJson(root) {
   for (const path of candidates) {
     if (existsSync(path)) {
       try {
-        return { path, servers: JSON.parse(readFileSync(path, 'utf8')) }
+        const parsed = JSON.parse(readFileSync(path, 'utf8'))
+        // .mcp.json 标准结构：{ "mcpServers": { <name>: {command/args/url/type/env} } }
+        // 兼容两种：顶层直接是服务器映射，或包在 mcpServers 键下
+        const servers = parsed && typeof parsed === 'object' && parsed.mcpServers && typeof parsed.mcpServers === 'object'
+          ? parsed.mcpServers
+          : parsed
+        return { path, servers }
       } catch {
         return { path, servers: null, error: 'invalid json' }
       }
