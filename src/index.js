@@ -576,21 +576,29 @@ function collectSkillDefinitions(roots) {
 }
 
 /**
- * 注册全局 skills 进 DSH skill 注册表（ctx.skills.register）。
- * 只注册**用户级 + 插件级**：用户全局（~/.agents/skills、~/.claude/skills）与插件自带。
- * 工作区级 skills 由 DSH 原生 dsh-skill-filesystem 按项目根隔离加载，这里不重复注册，
- * 避免所有工作区的配置互相串扰。
+ * 注册 skills 进 DSH skill 注册表（ctx.skills.register），供模型在对话中按
+ * whenToUse/description 自动唤醒。
+ *
+ * 注册范围：**用户级 + 所有工作区级 + 插件级**。
+ *   - 用户级：~/.agents/skills、~/.claude/skills（全局配置中心）
+ *   - 工作区级：各工作区 .claude/skills、.dsh/dsh-claude-migrator/skills
+ *     —— DSH 原生 dsh-skill-filesystem 只扫 .dsh/skills 与 .agents/skills，
+ *        不认 .claude/skills，所以这里必须注册，否则项目级 Claude skill 无法唤醒。
+ *   - 插件级：插件自带 skills/
+ * 注册是进程级、全局生效的：模型在任意工作区都能按描述唤醒这些 skill。
+ * 看板的「按当前工作区隔离」展示不受影响（那是 buildDashboard 的视图逻辑）。
  * @param ctx - cordis 上下文（含 skills 服务）。
  * @returns 卸载函数数组。
  */
 function registerPluginSkills(ctx) {
   const disposers = []
-  // 仅用户级 + 插件级（不含工作区级 —— 工作区级由 DSH 原生按项目隔离）
+  // 用户级 + 全部工作区级 + 插件级（必须传 {root, label} 对象数组，scanSkills 依赖 label 解构）
   const roots = [
+    ...workspaceConfigRoots(ctx),
     ...userConfigRoots(),
     { root: join(__dirname, '..'), label: 'plugin' },
   ]
-  const definitions = collectSkillDefinitions(roots.map((r) => r.root))
+  const definitions = collectSkillDefinitions(roots)
   for (const def of definitions) {
     try {
       disposers.push(ctx.skills.register(def))
