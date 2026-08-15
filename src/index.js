@@ -30,7 +30,7 @@ export const IMPORT_ROOT = join(__dirname, '..', 'import')
 export const SKILLS_ROOT = join(__dirname, '..', 'skills')
 
 /**
- * 发现当前工作区（workspace）根目录。
+ * 发现工作区根目录（cwd 兜底）。
  * 规则：从 process.cwd() 逐级向上找最近的 .git 目录，命中的父目录即项目根；
  * 找不到则退回 process.cwd() 本身。
  * @returns {string} 项目根目录绝对路径。
@@ -49,30 +49,69 @@ function findWorkspaceRoot() {
 }
 
 /**
+ * 列出所有注册的 DSH 工作区目录（经 ctx.workspaceRegistry）。
+ * dsh web 从任意目录启动都能找到所有项目，不依赖 process.cwd()。
+ * @param ctx - cordis 上下文（可能含 workspaceRegistry 服务）。
+ * @returns {string[]} 工作区绝对路径数组（去重）。
+ */
+function listRegisteredWorkspaces(ctx) {
+  const paths = []
+  const seen = new Set()
+  try {
+    const registry = ctx?.workspaceRegistry
+    if (registry && typeof registry.list === 'function') {
+      for (const ws of registry.list()) {
+        const p = ws?.path
+        if (typeof p === 'string' && p && !seen.has(p)) {
+          seen.add(p)
+          paths.push(p)
+        }
+      }
+    }
+  } catch (error) {
+    // registry 不可用时静默降级（仅用 cwd 兜底）
+  }
+  return paths
+}
+
+/**
  * 工作区配置根目录集合。
  * 兼容两层，都自动扫描、无需拖动任何文件：
  *   1) 项目根本身（<workspace>/）：直接识别原有 Claude 配置
  *        .claude/skills  .claude/rules  .mcp.json  CLAUDE.md
  *   2) 扩展区（<workspace>/.dsh/dsh-claude-migrator/）：
  *        skills/  rules/  hooks/  .mcp.json  CLAUDE.md  .claude/
+ * 工作区来源：DSH 注册表（所有项目）+ cwd 兜底。
+ * @param ctx - cordis 上下文。
  * @returns {Array<{root, label}>} 工作区配置根目录数组。
  */
-function workspaceConfigRoots() {
-  const ws = findWorkspaceRoot()
-  const extDir = join(ws, '.dsh', 'dsh-claude-migrator')
-  return [
-    { root: ws, label: 'workspace-root(.claude/.mcp.json)' },
-    { root: extDir, label: 'workspace-ext(.dsh/dsh-claude-migrator)' },
-  ]
+function workspaceConfigRoots(ctx) {
+  const roots = []
+  const seenPaths = new Set()
+  // 1) 所有注册的工作区
+  for (const ws of listRegisteredWorkspaces(ctx)) {
+    if (seenPaths.has(ws)) continue
+    seenPaths.add(ws)
+    roots.push({ root: ws, label: 'workspace-root(.claude/.mcp.json)' })
+    roots.push({ root: join(ws, '.dsh', 'dsh-claude-migrator'), label: 'workspace-ext(.dsh/dsh-claude-migrator)' })
+  }
+  // 2) cwd 兜底（未注册的当前目录）
+  const cwdRoot = findWorkspaceRoot()
+  if (cwdRoot && !seenPaths.has(cwdRoot)) {
+    roots.push({ root: cwdRoot, label: 'workspace-root(.claude/.mcp.json)' })
+    roots.push({ root: join(cwdRoot, '.dsh', 'dsh-claude-migrator'), label: 'workspace-ext(.dsh/dsh-claude-migrator)' })
+  }
+  return roots
 }
 
 /**
  * 汇总所有扫描根：工作区级 + 插件全局级（skills/ 与 import/）。
+ * @param ctx - cordis 上下文。
  * @returns {Array<{root, label}>} 全部配置根目录。
  */
-function allConfigRoots() {
+function allConfigRoots(ctx) {
   return [
-    ...workspaceConfigRoots(),
+    ...workspaceConfigRoots(ctx),
     { root: join(__dirname, '..'), label: 'plugin' },
   ]
 }
@@ -84,7 +123,7 @@ export const DASHBOARD_API = '/api/dsh-claude-dashboard'
 export const name = 'dsh-claude-migrator'
 
 /** 注入的服务：webServer（HTTP 路由）、loader（读 mcp 条目状态）、tools（读工具注册表）、skills（skill 注册表）。 */
-export const inject = ['webServer', 'loader', 'tools', 'skills']
+export const inject = ['webServer', 'loader', 'tools', 'skills', 'workspaceRegistry']
 
 /** 写 JSON 响应。 */
 function writeJson(res, status, body) {
@@ -295,7 +334,7 @@ function collectStaticMcp(loader) {
 /** 汇总看板数据。 */
 export function buildDashboard(ctx) {
   // 扫描全部层级：workspace 级（.dsh/.claude）+ 插件全局级（skills/ 与 import/）
-  const roots = allConfigRoots()
+  const roots = allConfigRoots(ctx)
   const scanRoots = roots.map((r) => r.root)
   const allSkills = scanSkills(scanRoots)
   // rules：各层 .dsh/rules、.claude/rules 转 skill + rule-* 目录（rule- 前缀归入 rules 区块）
@@ -355,6 +394,7 @@ export function buildDashboard(ctx) {
   return {
     importRoot: IMPORT_ROOT,
     workspaceRoot: findWorkspaceRoot(),
+    workspaces: listRegisteredWorkspaces(ctx),
     skills,
     rules,
     mcpJson: mcpJson ? { path: mcpJson.path, servers: dynamicServers.length } : null,
@@ -398,7 +438,7 @@ function collectSkillDefinitions(roots) {
 function registerPluginSkills(ctx) {
   const disposers = []
   // 扫描全部层级：workspace（.dsh/.claude）+ 插件全局（skills/ 与 import/）
-  const definitions = collectSkillDefinitions(allConfigRoots().map((r) => r.root))
+  const definitions = collectSkillDefinitions(allConfigRoots(ctx).map((r) => r.root))
   for (const def of definitions) {
     try {
       disposers.push(ctx.skills.register(def))
@@ -421,7 +461,7 @@ function registerPluginSkills(ctx) {
  */
 function registerWorkspaceHooks(ctx) {
   const disposers = []
-  const wsRoots = workspaceConfigRoots()
+  const wsRoots = workspaceConfigRoots(ctx)
   for (const { root } of wsRoots) {
     const hooksDir = join(root, 'hooks')
     if (!existsSync(hooksDir)) continue
