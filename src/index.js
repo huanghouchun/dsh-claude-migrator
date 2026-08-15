@@ -655,6 +655,12 @@ function registerPluginSkills(ctx) {
               name: s.name,
               description: s.description || `skill ${s.name}`,
               ...s.whenToUse ? { whenToUse: s.whenToUse } : {},
+              // 调用策略必须显式给出：dsh-skill 的校验对缺失的 invocation 放行，
+              // 但宿主消费方（dsh-host-apiproxy / isUserInvocable）会直接读
+              // skill.invocation.modelInvocable / userInvocable，缺省即抛
+              // "Cannot read properties of undefined (reading 'modelInvocable')"。
+              // 官方 dsh-skill-filesystem 同样始终返回该字段（默认 true/true）。
+              invocation: { modelInvocable: true, userInvocable: true },
               provider: 'claude-migrator',
               source: s.sourceLevel,
               rank: s.sourceLevel === 'workspace' ? 110 : s.sourceLevel === 'user' ? 120 : 130,
@@ -674,6 +680,9 @@ function registerPluginSkills(ctx) {
             name: candidate.name,
             description: candidate.description,
             ...candidate.whenToUse ? { whenToUse: candidate.whenToUse } : {},
+            // 定义同样必须带 invocation（候选里给过默认 true/true，这里保持一致），
+            // 否则 skill 加载校验后的消费链路同样会解引用 undefined。
+            invocation: { modelInvocable: true, userInvocable: true },
             provider: 'claude-migrator',
             source: levelByName.get(candidate.name) ?? candidate.source,
             resourceBase: { kind: 'directory', path: candidate.locator.directory },
