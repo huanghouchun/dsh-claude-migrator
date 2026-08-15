@@ -1,7 +1,7 @@
 {
   "name": "dsh-claude-migrator",
   "description": "Claude → DeepSeek Harness (DSH) 配置迁移插件：把 .claude/skills、.claude/rules、.mcp.json、CLAUDE.md 拖入插件目录即自动加载为 DSH 能力，内置完整看板（skills / rules / MCP / 连接状态）。",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "license": "MIT",
   "author": "sanmao5",
