@@ -295,6 +295,56 @@ window.__ModuleLoader__.load({
 			var controller = { open: false, timer: undefined }
 			var disposers = []
 
+			/** 切换看板面板（侧边栏入口与工作区菜单共用）。 */
+			function togglePanel() {
+				controller.open = !controller.open
+				var panel = document.querySelector(PANEL_SELECTOR)
+				if (panel) setPanelOpen(panel, controller.open, controller)
+			}
+
+			/**
+			 * 往工作区「⋯」更多菜单注入「Claude 迁移看板」菜单项。
+			 * DSH 官方菜单项硬编码（重命名/删除），无插件注册接口，因此用 DOM 注入：
+			 * 监听 role="menu" 的菜单容器，若已含「重命名」项（工作区菜单特征）且未注入过，
+			 * 追加一个 role="menuitem" 的「Claude 迁移看板」项。
+			 */
+			function injectWorkspaceMenu() {
+				try {
+					var menus = document.querySelectorAll('[role="menu"]')
+					for (var i = 0; i < menus.length; i++) {
+						var menu = menus[i]
+						if (menu.querySelector('[data-dsh-cm-menuitem]')) continue
+						// 工作区菜单特征：包含「重命名」文本的菜单项
+						var hasRename = Array.prototype.some.call(menu.querySelectorAll('[role="menuitem"]'), function (item) {
+							return item.textContent.indexOf("重命名") !== -1 || item.textContent.indexOf("Rename") !== -1
+						})
+						if (!hasRename) continue
+						// 构造菜单项（仿官方 menuitem 结构）
+						var item = document.createElement("div")
+						item.setAttribute("role", "menuitem")
+						item.dataset.dshCmMenuitem = ""
+						item.tabIndex = -1
+						item.style.cssText =
+							"display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;font-size:13px;" +
+							"color:var(--dsh-cm-text);border-radius:6px;user-select:none;white-space:nowrap;"
+						item.innerHTML = ICON + '<span>' + T.entry + "</span>"
+						item.addEventListener("click", function (e) {
+							e.stopPropagation()
+							togglePanel()
+						})
+						item.addEventListener("mouseenter", function () {
+							item.style.background = "var(--dsh-cm-bg-2)"
+						})
+						item.addEventListener("mouseleave", function () {
+							item.style.background = "transparent"
+						})
+						menu.appendChild(item)
+					}
+				} catch (error) {
+					console.warn("[dsh-claude-migrator] workspace menu inject failed:", error)
+				}
+			}
+
 			function ensureMount() {
 				try {
 					ensureTheme()
@@ -302,11 +352,7 @@ window.__ModuleLoader__.load({
 					var entry = document.querySelector(ENTRY_SELECTOR)
 					// querySelector 找不到返回 null（不是 undefined），必须用 !entry 判断
 					if (root !== undefined && !entry) {
-						entry = createEntry(function () {
-							controller.open = !controller.open
-							var panel = document.querySelector(PANEL_SELECTOR)
-							if (panel) setPanelOpen(panel, controller.open, controller)
-						})
+						entry = createEntry(function () { togglePanel() })
 						placeEntry(root, entry)
 					}
 					var panel = document.querySelector(PANEL_SELECTOR)
@@ -330,7 +376,10 @@ window.__ModuleLoader__.load({
 				disposers.push(function () { document.removeEventListener("DOMContentLoaded", ensureMount) })
 			}
 			var rootNode = document.documentElement ?? document
-			var observer = new MutationObserver(ensureMount)
+			var observer = new MutationObserver(function () {
+				ensureMount()
+				injectWorkspaceMenu()
+			})
 			observer.observe(rootNode, { childList: true, subtree: true })
 			disposers.push(function () { observer.disconnect() })
 
