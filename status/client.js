@@ -232,13 +232,13 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 可折叠区块：<details> 原生折叠（点击标题展开/收起），默认展开。
-		 * 每个区块独立折叠，刷新后状态重置为展开。
+		 * 可折叠区块：<details> 原生折叠（点击标题展开/收起），默认收起。
+		 * 每个区块独立折叠，刷新后状态重置为收起。
 		 * @returns {string} 区块起始标签（含标题行）。
 		 */
 		function sectionOpen(title, count) {
 			return (
-				'<details open style="margin:12px 0 8px;">' +
+				'<details style="margin:12px 0 8px;">' +
 				'<summary style="cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none;list-style:none;">' +
 				'<span style="display:inline-flex;transition:transform .2s ease;">▸</span>' +
 				'<strong style="font-size:13px;">' + esc(title) + "</strong>" +
