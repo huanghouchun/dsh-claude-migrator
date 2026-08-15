@@ -1,0 +1,13 @@
+# 发布相关（npm pack 已用 files 白名单控制，这里防误提交）
+*.tgz
+node_modules/
+
+# 开发辅助
+scripts/
+.npmrc
+*.log
+.DS_Store
+
+# Python 缓存
+__pycache__/
+*.pyc

@@ -1,0 +1,9 @@
+# 发布排除（npm pack / npm publish 忽略）
+scripts/
+__pycache__/
+*.pyc
+*.pyo
+*.map
+.DS_Store
+*.log
+node_modules/

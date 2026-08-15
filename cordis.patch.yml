@@ -1,0 +1,43 @@
+# dsh-claude-migrator bundle patch
+# 泛化的「Claude → DSH 配置迁移」插件：把 .claude/skills、.claude/rules、.mcp.json、CLAUDE.md
+# 拖入 import/ 目录即自动加载为 DSH 能力，内置看板（skills / rules / MCP / 连接状态）。
+#
+# 应用顺序：dsh-base → dsh-web-app → 本 bundle → profile cordis.patch.yml → home cordis.patch.yml
+# patch 会按 id 覆盖整行 config，因此下面重述了所需 key。
+#
+# skills 挂载由 host 端（src/index.js）在 apply 时动态注册：用 import.meta.url 定位
+# 插件自身目录（skills/ + import/），不依赖任何绝对路径，天然泛化、可发布。
+
+- insert:
+    - id: dsh-claude-migrator
+      name: 'dsh-claude-migrator'
+
+    # ── MCP 服务器配置模板 ──
+    # 每个 server 一个 dsh-mcp-client 实例。密钥统一走环境变量占位符
+    # （!!js process.env.XXX），未设置密钥的 server 自动禁用，不阻塞 DSH 启动。
+    # 按需取消注释并修改：
+
+    # # stdio 型示例（本地命令，如 npx）
+    # - id: mcp-my-server
+    #   name: '@deepseek-ai/dsh-mcp-client'
+    #   disabled: !!js "!process.env.MY_API_KEY"
+    #   config:
+    #     serverName: my-server
+    #     transport: stdio
+    #     command: npx
+    #     args: ['-y', 'my-mcp-package@1.0.0', '--flag']
+    #     env:
+    #       MY_API_KEY: !!js process.env.MY_API_KEY
+    #
+    # # streamable-http 型示例（远程 API）
+    # - id: mcp-my-http
+    #   name: '@deepseek-ai/dsh-mcp-client'
+    #   disabled: !!js "!process.env.MY_TOKEN"
+    #   config:
+    #     serverName: my-http
+    #     transport: streamable-http
+    #     url: https://example.com/mcp
+    #     headers:
+    #       Authorization: !!js '`Bearer ${process.env.MY_TOKEN}`'
+    #
+    # 更完整的字段说明见 USAGE.md 第三节「如何配置一个 MCP」。

@@ -1,0 +1,49 @@
+{
+  "name": "dsh-claude-migrator",
+  "description": "Claude → DeepSeek Harness (DSH) 配置迁移插件：把 .claude/skills、.claude/rules、.mcp.json、CLAUDE.md 拖入插件目录即自动加载为 DSH 能力，内置完整看板（skills / rules / MCP / 连接状态）。",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "author": "sanmao5",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "claude",
+    "migrator",
+    "mcp",
+    "skill",
+    "rules"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./status/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "status",
+    "skills",
+    "import",
+    "cordis.patch.yml",
+    "README.md",
+    "USAGE.md",
+    "PUBLISH.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  }
+}
