@@ -49,21 +49,20 @@ function findWorkspaceRoot() {
 }
 
 /**
- * 工作区配置区根目录：<项目根>/.dsh/dsh-claude-migrator/
- * 约定结构：
- *   .dsh/dsh-claude-migrator/skills/    → workspace 级 skills
- *   .dsh/dsh-claude-migrator/rules/     → workspace 级 rules（自动转 skill）
- *   .dsh/dsh-claude-migrator/CLAUDE.md  → workspace 级指令
- *   .dsh/dsh-claude-migrator/hooks/     → workspace 级事件钩子（*.js）
- *   .dsh/dsh-claude-migrator/.mcp.json  → workspace 级 MCP
- *   .dsh/dsh-claude-migrator/.claude/   → 兼容的 Claude 迁移来源（skills/rules）
+ * 工作区配置根目录集合。
+ * 兼容两层，都自动扫描、无需拖动任何文件：
+ *   1) 项目根本身（<workspace>/）：直接识别原有 Claude 配置
+ *        .claude/skills  .claude/rules  .mcp.json  CLAUDE.md
+ *   2) 扩展区（<workspace>/.dsh/dsh-claude-migrator/）：
+ *        skills/  rules/  hooks/  .mcp.json  CLAUDE.md  .claude/
  * @returns {Array<{root, label}>} 工作区配置根目录数组。
  */
 function workspaceConfigRoots() {
   const ws = findWorkspaceRoot()
-  const cfgDir = join(ws, '.dsh', 'dsh-claude-migrator')
+  const extDir = join(ws, '.dsh', 'dsh-claude-migrator')
   return [
-    { root: cfgDir, label: 'workspace(.dsh/dsh-claude-migrator)' },
+    { root: ws, label: 'workspace-root(.claude/.mcp.json)' },
+    { root: extDir, label: 'workspace-ext(.dsh/dsh-claude-migrator)' },
   ]
 }
 
@@ -160,17 +159,22 @@ function scanSkills(roots) {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name)
         let content = null
+        let filePath = full
         if (entry.isDirectory() && isSkillDir(full)) {
-          content = readFileSync(join(full, 'SKILL.md'), 'utf8')
+          // 目录型 skill：<name>/SKILL.md，路径指向 SKILL.md 文件（供正文读取）
+          filePath = join(full, 'SKILL.md')
+          content = readFileSync(filePath, 'utf8')
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
           content = readFileSync(full, 'utf8')
         }
         if (content === null) continue
+        // 跳过说明类文件（README.md 等），避免被误当 skill
+        if (/^README(\.zh)?\.md$/i.test(entry.name)) continue
         const meta = parseFrontmatter(content)
         const name = meta.name || entry.name.replace(/\.md$/, '')
         if (seen.has(name)) continue
         seen.add(name)
-        out.push({ name, description: meta.description || '', whenToUse: meta.whenToUse || '', path: full })
+        out.push({ name, description: meta.description || '', whenToUse: meta.whenToUse || '', path: filePath })
       }
     }
   }

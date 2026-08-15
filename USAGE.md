@@ -11,23 +11,29 @@ dsh-claude-migrator 扫描 **两层** 配置来源，都自动合并加载：
 | 层级 | 位置 | 适用 |
 |------|------|------|
 | **插件全局级** | 插件目录 `skills/`、`import/` | 所有项目共享（发布自带 / 全局拖入） |
-| **workspace 项目级** | `<项目根>/.dsh/dsh-claude-migrator/` | 每个项目各自的配置 |
+| **workspace 项目级** | 项目根原有 Claude 配置 + `.dsh/dsh-claude-migrator/` | 每个项目各自的配置 |
 
-### workspace 配置区结构
+### workspace 级：直接兼容，零拖动
+
+**在项目根原有 Claude 配置（`.claude/`、`.mcp.json`、`CLAUDE.md`）直接生效，无需移动任何文件**——Claude Code 用户切到 DSH 即用：
 
 ```
 你的项目根/
+├── .claude/                  ← 原有 Claude 配置（插件直接识别）
+│   ├── skills/               → 自动进 DSH skill 注册表
+│   └── rules/                → 自动转 skill（paths → whenToUse）
+├── .mcp.json                 → 自动识别 MCP 服务器
+├── CLAUDE.md                 → DSH 原生自动加载（dsh-agent-instructions）
 └── .dsh/
-    └── dsh-claude-migrator/        ← workspace 配置区（随项目 git 管理）
-        ├── skills/                 ← 项目级 skills（.md 或 <name>/SKILL.md）
-        ├── rules/                  ← 项目级 rules（自动转 skill）
-        ├── CLAUDE.md               ← 项目级指令（DSH 原生自动加载，已实测 ✓）
-        ├── hooks/                  ← 项目级事件钩子（*.js / *.cjs）
-        ├── .mcp.json               ← 项目级 MCP 服务器
-        └── .claude/                ← 兼容的 Claude 迁移来源（skills/rules）
+    └── dsh-claude-migrator/  ← 可选扩展区（放不想进 .claude 的项目专属配置）
+        ├── skills/           → 项目级 skills
+        ├── rules/            → 项目级 rules（自动转 skill）
+        ├── hooks/            → 项目级事件钩子（*.js / *.cjs）
+        ├── .mcp.json         → 项目级 MCP
+        └── .claude/          → 兼容的迁移来源
 ```
 
-> 已验证：`<项目根>/.dsh/dsh-claude-migrator/CLAUDE.md` 会被 DSH 的 `dsh-agent-instructions` **原生自动加载**；`skills/`、`rules/`、`hooks/`、`.mcp.json` 由本插件扫描注册。
+> 已验证：从项目根启动，`.claude/skills` 的 9 个 skill、`.claude/rules` 的 10 条规则、`.mcp.json` **全部自动识别并注册**，无需任何拖动或配置。
 
 ---
 
@@ -223,14 +229,25 @@ dsh --profile web --dump-config | grep -A 8 "id: mcp-"
 
 ## 四、配置 workspace 级（项目级）
 
-把配置放进 **`<项目根>/.dsh/dsh-claude-migrator/`**，该项目的所有 DSH 会话自动生效（随项目 git 管理，换机器 clone 即带）：
+### 4.0 直接兼容（推荐，零配置）
 
-### 4.1 skills（项目级）
+**项目根原有的 `.claude/`、`.mcp.json`、`CLAUDE.md` 直接生效**，无需移动或复制：
 
 ```powershell
-# 放 .md 文件（扁平）或 <name>/SKILL.md（目录）
+# 什么都不用做！插件自动扫描：
+#   .claude/skills/  → skills 直接可用
+#   .claude/rules/   → rules 自动转 skill
+#   .mcp.json        → MCP 自动识别
+#   CLAUDE.md        → DSH 原生加载
+```
+
+如果你想把某些配置**只放在项目里**（不进 `.claude/`），用下面的扩展区：
+
+### 4.1 扩展区 skills（项目级）
+
+```powershell
 mkdir "<项目根>\.dsh\dsh-claude-migrator\skills"
-# 复制你的 skill：
+# 放 .md 文件（扁平）或 <name>/SKILL.md（目录）
 Copy-Item ".claude\skills\my-skill" "<项目根>\.dsh\dsh-claude-migrator\skills\" -Recurse
 ```
 
