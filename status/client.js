@@ -10,9 +10,9 @@ window.__ModuleLoader__.load({
 		 *
 		 * 手写 window.__ModuleLoader__.load 契约（与官方 dsh-client-modules 同格式），
 		 * 无需构建链。功能：
-		 *   - 侧边栏「配置中心」入口行（纯 DOM，MutationObserver 自愈）
+		 *   - 侧边栏「CLAUDE 配置中心」入口行（纯 DOM，MutationObserver 自愈）
 		 *   - 点击弹出完整看板：Skill 列表 / Rules 列表 / MCP 列表与连接状态
-		 *   - 工作区「⋯」更多菜单注入「配置中心看板」菜单项
+		 *   - 工作区「⋯」更多菜单注入「CLAUDE 配置中心」菜单项
 		 *   - 面板头部：刷新按钮（带旋转动画）、关闭按钮
 		 *
 		 * 主题适配：所有颜色走 CSS 变量（--dsh-cm-*），并通过 body[data-ds-dark-theme]
@@ -40,8 +40,8 @@ window.__ModuleLoader__.load({
 
 		/** 中文文案。 */
 		var T = {
-			entry: "配置中心",
-			tooltip: "查看项目 skills / rules / MCP 与连接状态",
+			entry: "CLAUDE 配置中心",
+			tooltip: "查看项目/用户 skills、rules、MCP 与连接状态",
 			loading: "加载中…",
 			error: "加载失败",
 			refresh: "刷新",
@@ -83,7 +83,9 @@ window.__ModuleLoader__.load({
 			"}" +
 			// 刷新按钮旋转动画：图标无限旋转，直到数据返回渲染（innerHTML 重建自动停止）
 			"@keyframes dsh-cm-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}" +
-			"[data-dsh-cm-refresh-icon].dsh-cm-spinning{animation:dsh-cm-spin .7s linear infinite;display:inline-flex;}";
+			"[data-dsh-cm-refresh-icon].dsh-cm-spinning{animation:dsh-cm-spin .7s linear infinite;display:inline-flex;}" +
+			// 折叠区块箭头：展开时旋转 90°（details[open] 的 summary 下第一个 span）
+			"details[open]>summary>span:first-child{transform:rotate(90deg);}";
 
 		/** 注入主题样式（幂等）。 */
 		function ensureTheme() {
@@ -229,14 +231,25 @@ window.__ModuleLoader__.load({
 			)
 		}
 
-		/** 区块标题。 */
-		function sectionTitle(title, count) {
+		/**
+		 * 可折叠区块：<details> 原生折叠（点击标题展开/收起），默认展开。
+		 * 每个区块独立折叠，刷新后状态重置为展开。
+		 * @returns {string} 区块起始标签（含标题行）。
+		 */
+		function sectionOpen(title, count) {
 			return (
-				'<div style="display:flex;align-items:baseline;gap:6px;margin:12px 0 8px;">' +
+				'<details open style="margin:12px 0 8px;">' +
+				'<summary style="cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none;list-style:none;">' +
+				'<span style="display:inline-flex;transition:transform .2s ease;">▸</span>' +
 				'<strong style="font-size:13px;">' + esc(title) + "</strong>" +
 				'<span style="font-size:12px;color:var(--dsh-cm-text-3);">' + esc(count) + "</span>" +
-				"</div>"
+				"</summary>"
 			)
+		}
+
+		/** 折叠区块结束标签。 */
+		function sectionClose() {
+			return "</details>"
 		}
 
 		/** 渲染完整看板。 */
@@ -259,30 +272,33 @@ window.__ModuleLoader__.load({
 				(data.summary ? data.summary.skills + " " + T.skillCount + " / " + data.summary.rules + " " + T.ruleCount + " / " + data.summary.mcp + " " + T.mcpCount : "") +
 				"</div>"
 
-			// Skills
+			// Skills（可折叠）
 			var skillsBlock =
-				sectionTitle(T.sectionSkills, data.skills ? data.skills.length + " " + T.skillCount : "0")
+				sectionOpen(T.sectionSkills, data.skills ? data.skills.length + " " + T.skillCount : "0")
 				+ (data.skills && data.skills.length > 0
 					? data.skills.map(renderSkill).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
+				+ sectionClose()
 
-			// Rules
+			// Rules（可折叠）
 			var rulesBlock =
-				sectionTitle(T.sectionRules, data.rules ? data.rules.length + " " + T.ruleCount : "0")
+				sectionOpen(T.sectionRules, data.rules ? data.rules.length + " " + T.ruleCount : "0")
 				+ (data.rules && data.rules.length > 0
 					? data.rules.map(renderRule).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
+				+ sectionClose()
 
-			// MCP
+			// MCP（可折叠）
 			var mcpSummary =
 				"共 " + (data.summary ? data.summary.mcp : 0) + " · 已连接 " + (data.summary ? data.summary.mcpConnected : 0) +
 				" · 连接中 " + (data.summary ? data.summary.mcpConnecting || 0 : 0) +
 				" · 禁用 " + (data.summary ? data.summary.mcpDisabled : 0)
 			var mcpBlock =
-				sectionTitle(T.sectionMcp, mcpSummary)
+				sectionOpen(T.sectionMcp, mcpSummary)
 				+ (data.mcpServers && data.mcpServers.length > 0
 					? data.mcpServers.map(renderMcp).join("")
 					: '<div style="font-size:12px;color:var(--dsh-cm-text-3);">' + T.none + "</div>")
+				+ sectionClose()
 
 			panel.innerHTML = head + skillsBlock + rulesBlock + mcpBlock
 
@@ -352,10 +368,10 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
-			 * 往工作区「⋯」更多菜单注入「配置中心看板」菜单项。
+			 * 往工作区「⋯」更多菜单注入「CLAUDE 配置中心」菜单项。
 			 * DSH 官方菜单项硬编码（重命名/删除），无插件注册接口，因此用 DOM 注入：
 			 * 监听 role="menu" 的菜单容器，若已含「重命名」项（工作区菜单特征）且未注入过，
-			 * 追加一个 role="menuitem" 的「配置中心看板」项。
+			 * 追加一个 role="menuitem" 的「CLAUDE 配置中心」项。
 			 */
 			function injectWorkspaceMenu() {
 				try {

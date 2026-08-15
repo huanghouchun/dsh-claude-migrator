@@ -27,9 +27,10 @@ import/
 
 ## 怎么看效果
 
-侧边栏「**Claude 迁移**」入口 → 看板实时展示 Skills / Rules / MCP 列表与连接状态（5 秒自动刷新）。
+侧边栏「**CLAUDE 配置中心**」入口 → 看板实时展示 Skills / Rules / MCP 列表与连接状态（5 秒自动刷新，区块可折叠）。
 
 ## 说明
 
 - 密钥不存本目录明文：`.mcp.json` 里的 `${XXX}` 占位符对应系统环境变量，未设置的服务器自动禁用。
 - 本目录内容**随插件一起分发**：发布到 npm 后，用户装完即自带这些配置；其他用户也可往自己的 import/ 里拖入自己的 Claude 配置。
+- 除本目录外，插件还自动扫描**用户主目录**（`~/.claude/skills`、`~/.agents/skills`、`~/.dsh/dsh-claude-migrator/`）与**项目根**（`.claude/`、`.mcp.json`、`CLAUDE.md`），三者自动合并。

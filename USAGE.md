@@ -1,17 +1,35 @@
 # dsh-claude-migrator 使用指南
 
-本插件把 Claude 项目的配置（skills / rules / MCP / 指令 / hooks）迁移到 DeepSeek Harness (DSH)，支持**插件全局级**与**workspace 项目级**两种配置区。本文档说明：**插件如何使用**、**如何新增一个 skill**、**如何配置一个 MCP**、**如何配置 workspace 级**。
+本插件把 Claude 项目的配置（skills / rules / MCP / 指令 / hooks）迁移到 DeepSeek Harness (DSH)，支持**用户全局级**、**插件全局级**与**workspace 项目级**三种配置区。本文档说明：**插件如何使用**、**如何新增一个 skill**、**如何配置一个 MCP**、**如何配置 workspace 级**。
 
 ---
 
-## 〇、两级配置区（先看这个）
+## 〇、三级配置区（先看这个）
 
-dsh-claude-migrator 扫描 **两层** 配置来源，都自动合并加载：
+dsh-claude-migrator 扫描 **三层** 配置来源，都自动合并加载（同名以先扫到的为准）：
 
 | 层级 | 位置 | 适用 |
 |------|------|------|
-| **插件全局级** | 插件目录 `skills/`、`import/` | 所有项目共享（发布自带 / 全局拖入） |
+| **用户全局级** | 用户主目录 `~/.claude/`、`~/.agents/skills/`、`~/.dsh/dsh-claude-migrator/` | 本机所有项目共享的全局配置 |
+| **插件全局级** | 插件目录 `skills/`、`import/` | 发布自带 / 随插件分发 |
 | **workspace 项目级** | 项目根原有 Claude 配置 + `.dsh/dsh-claude-migrator/` | 每个项目各自的配置 |
+
+### 用户全局级：读用户目录，而非插件目录
+
+**全局配置中心读取用户主目录**（`C:\Users\<你>\` 下），把 `~/.claude/skills`、`~/.agents/skills`、`~/.claude/rules`、`~/.mcp.json`、`~/.dsh/dsh-claude-migrator/` 都自动合并进看板与注册表：
+
+```
+你的用户主目录/
+├── .agents/
+│   └── skills/              → 全局 skills（Claude 的全局 skill 安装目录）
+├── .claude/
+│   ├── skills/              → 全局 skills
+│   └── rules/               → 全局 rules（自动转 skill）
+├── .mcp.json                → 全局 MCP 服务器（可选）
+└── .dsh/
+    └── dsh-claude-migrator/ ← 可选扩展区（放不想进 .claude 的全局配置）
+        ├── skills/  rules/  hooks/  .mcp.json  CLAUDE.md  .claude/
+```
 
 ### workspace 级：直接兼容，零拖动
 
@@ -43,9 +61,9 @@ dsh-claude-migrator 扫描 **两层** 配置来源，都自动合并加载：
 
 | 部分 | 载体 | 生效方式 |
 |------|------|----------|
-| skills | 插件 `skills/`、`import/` + workspace `.dsh/dsh-claude-migrator/skills/` | 模型对话中按 `whenToUse`/`description` **自动加载** |
-| rules | workspace `.dsh/dsh-claude-migrator/rules/`（自动转 skill） | 按路径语义自动加载 |
-| MCP 服务器 | `cordis.patch.yml` 静态 + workspace `.dsh/dsh-claude-migrator/.mcp.json` | 以 `mcp__<server>__<tool>` 工具形式供模型调用 |
+| skills | 用户 `~/.agents/skills`、`~/.claude/skills` + 插件 `skills/`、`import/` + workspace `.dsh/dsh-claude-migrator/skills/` | 模型对话中按 `whenToUse`/`description` **自动加载** |
+| rules | 用户 `~/.claude/rules` + workspace `.dsh/dsh-claude-migrator/rules/`（自动转 skill） | 按路径语义自动加载 |
+| MCP 服务器 | `.mcp.json`（用户 / workspace / 插件三级）**动态注册为 dsh-mcp-client 实例** | 以 `mcp__<server>__<tool>` 工具形式供模型调用（真实连接 + 自动重连） |
 | CLAUDE.md / AGENTS.md | 项目根 + `.dsh/dsh-claude-migrator/CLAUDE.md` | DSH 原生加载（`dsh-agent-instructions`） |
 | hooks | workspace `.dsh/dsh-claude-migrator/hooks/*.js` | 启动时注册 DSH 事件钩子 |
 
@@ -310,31 +328,33 @@ Copy-Item ".claude" "<项目根>\.dsh\dsh-claude-migrator\.claude" -Recurse
 
 ---
 
-## 五、Claude 迁移看板
+## 五、CLAUDE 配置中心（看板）
 
-插件自带一个 **Claude 迁移看板**，让你在 GUI 里直接看到导入的 skills、rules、MCP 及连接状况。
+插件自带一个 **CLAUDE 配置中心看板**，让你在 GUI 里直接看到用户级 / 项目级的 skills、rules、MCP 及连接状况。
 
 ### 入口
 
-重启 `dsh web` 后，侧边栏「新建会话」行下方会出现 **「Claude 迁移」** 入口，点击弹出完整看板。
+重启 `dsh web` 后，侧边栏「新建会话」行下方会出现 **「CLAUDE 配置中心」** 入口，点击弹出完整看板；工作区「⋯」更多菜单里也有同名菜单项。
 
-### 看板内容（四块）
+### 看板内容（四个可折叠区块）
 
 | 区块 | 展示内容 |
 |------|----------|
-| **Skills** | 已导入的 skill 列表：名称 + 触发描述 + whenToUse |
-| **Rules** | 已转换的规则（`rule-*`）：适用路径（whenToUse）+ 来源 |
-| **MCP 服务器** | 每个服务器的 serverName、transport、命令/URL、工具数量（可展开工具名列表） |
+| **Skills**（可折叠） | 用户级 + 项目级 skill 列表：名称 + 触发描述 + whenToUse |
+| **Rules**（可折叠） | 已转换的规则（`rule-*`）：适用路径（whenToUse）+ 来源 |
+| **MCP 服务器**（可折叠） | 每个服务器的 serverName、transport、命令/URL、工具数量（可展开工具名列表） |
 | **连接状态** | 🟢 **已连接（绿色标签）** / 🟡 连接中 / ⚪ 已禁用；顶部汇总「共 X · 已连接 X · 连接中 X · 禁用 X」 |
 
-- 面板 **5 秒自动轮询**，也可点「刷新」手动刷新。
+- 面板 **5 秒自动轮询**，也可点「刷新」手动刷新（刷新时图标旋转动画）。
+- **区块可折叠**：点击各区块标题（▸）展开/收起，默认展开。
 - **主题自适应**：颜色走 `--dsh-cm-*` CSS 变量，`body[data-ds-dark-theme]` 时自动切深色（深蓝背景 + 浅色文字），与 DSH 皮肤（如鲸吟）协调；已连接用绿色胶囊标签。
 
 ### 技术说明
 
-- Host 端：`src/index.js` 注册 `/api/dsh-claude-dashboard` 路由（仅回环访问），扫描 `skills/`（内置）与 `import/`（用户拖入）目录，从 tools 注册表统计 `mcp__` 前缀工具判断连接状态。
+- Host 端：`src/index.js` 注册 `/api/dsh-claude-dashboard` 路由（仅回环访问），扫描**用户级 + 工作区级 + 插件级**三层配置，从 tools 注册表统计 `mcp__` 前缀工具判断连接状态。
+- MCP 真实连接：`.mcp.json` 的服务器在启动时被**动态注册为 dsh-mcp-client 实例**（`ctx.plugin` + `ctx.loader.import`），密钥占位符 `${VAR}` 自动展开为环境变量，带自动重连。
 - Browser 端：`status/client.js` 以 `window.__ModuleLoader__.load` 契约挂载侧边栏入口与看板（纯 DOM，无构建链）。
-- 状态判断：`disabled`（Loader 层）→ 禁用；有 `mcp__<server>` 工具 → 已连接；已启用但无工具 → 连接中。
+- 状态判断：`disabled`（配置层）→ 禁用；有 `mcp__<server>` 工具 → 已连接；已启用但无工具 → 连接中。
 
 ---
 
@@ -344,6 +364,7 @@ Copy-Item ".claude" "<项目根>\.dsh\dsh-claude-migrator\.claude" -Recurse
 |------|------------|
 | 新增 skill 后模型看不到 | ① 目录名不是 kebab-case 或 SKILL.md 缺 `name`/`description`；② 深层嵌套（只扫一层）；③ 当前进程在插件安装前启动 → **重启 dsh web** |
 | MCP 工具不可用 | ① 对应环境变量未设置（server 自动禁用）；② 服务器地址/密钥错误；③ 未重启 |
+| MCP 显示「连接中」不变 | 动态注册的连接带自动重连（指数退避）；持续失败多为密钥/地址问题，查看日志确认 |
 | 修改 patch 不生效 | `cordis.patch.yml` 只在进程启动时读取 → 重启 dsh web |
 | 用 file: 安装的插件改了源码不生效 | file 方式会复制一份到 profile，需重新 `dsh plugin add`；推荐 junction/link 方式（改动实时可见） |
 | 想恢复默认（移除插件） | `dsh plugin --profile web remove dsh-claude-migrator` 后重启 |
@@ -354,5 +375,5 @@ Copy-Item ".claude" "<项目根>\.dsh\dsh-claude-migrator\.claude" -Recurse
 
 - **skills**：`skills/<name>/SKILL.md`，新增/修改即生效（junction 安装时）。
 - **rules**：`skills/rule-<name>/SKILL.md`，规则内容源自 `.claude/rules/`，改动时两边同步。
-- **MCP**：`cordis.patch.yml` 的 `insert` 段。
+- **MCP**：`.mcp.json`（用户 / workspace / 插件三级）→ 启动时动态注册，密钥用 `${VAR}` 占位符。
 - **文档**：本文件与 `README.md` 同目录，随插件一起维护。

@@ -18,6 +18,7 @@ import { readFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, writeFi
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 
 // ESM 下的 require 桥（用于同步加载 CJS hooks）
 const hookRequire = createRequire(import.meta.url)
@@ -105,13 +106,32 @@ function workspaceConfigRoots(ctx) {
 }
 
 /**
- * 汇总所有扫描根：工作区级 + 插件全局级（skills/ 与 import/）。
+ * 用户级配置根目录集合（全局配置中心）。
+ * 读取用户主目录下的 Claude/DSH 全局配置，而非插件安装目录：
+ *   1) 用户根本身（<home>/）：
+ *        .claude/skills  .claude/rules  .agents/skills  .mcp.json  CLAUDE.md
+ *   2) 扩展区（<home>/.dsh/dsh-claude-migrator/）：
+ *        skills/  rules/  hooks/  .mcp.json  CLAUDE.md  .claude/
+ * @returns {Array<{root, label}>} 用户级配置根目录数组。
+ */
+function userConfigRoots() {
+  const home = homedir()
+  if (!home || !existsSync(home)) return []
+  return [
+    { root: home, label: 'user-root(.claude/.agents/.mcp.json)' },
+    { root: join(home, '.dsh', 'dsh-claude-migrator'), label: 'user-ext(.dsh/dsh-claude-migrator)' },
+  ]
+}
+
+/**
+ * 汇总所有扫描根：工作区级 + 用户级 + 插件全局级（skills/ 与 import/）。
  * @param ctx - cordis 上下文。
  * @returns {Array<{root, label}>} 全部配置根目录。
  */
 function allConfigRoots(ctx) {
   return [
     ...workspaceConfigRoots(ctx),
+    ...userConfigRoots(),
     { root: join(__dirname, '..'), label: 'plugin' },
   ]
 }
@@ -187,10 +207,12 @@ function scanSkills(roots) {
       // A) root 即配置区
       join(root, 'skills'),
       join(root, '.claude', 'skills'),
+      join(root, '.agents', 'skills'),
       // B) root 是项目/插件根
       join(root, '.dsh', 'dsh-claude-migrator', 'skills'),
       join(root, '.dsh', 'skills'),
       join(root, '.claude', 'skills'),
+      join(root, '.agents', 'skills'),
       join(root, 'skills'),
     ]
     for (const dir of tryRoots) {
@@ -335,6 +357,97 @@ function collectStaticMcp(loader) {
     })
   }
   return out
+}
+
+/** 展开字符串中的 ${VAR} 环境变量占位符（递归，防循环）。 */
+export function expandEnv(str) {
+  if (typeof str !== 'string') return str
+  const seen = new Set()
+  const expand = (s) => s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
+    if (seen.has(name)) return match
+    seen.add(name)
+    return expand(process.env[name] ?? '')
+  })
+  return expand(str)
+}
+
+/**
+ * 把 .mcp.json 的服务器配置转换为 dsh-mcp-client 的 config。
+ * Claude 的 .mcp.json 字段：type(http/stdio)/command/args/env/url/headers。
+ * @param serverName - 服务器名。
+ * @param cfg - .mcp.json 中的服务器配置对象。
+ * @returns dsh-mcp-client 接受的 config，或 null（无法转换）。
+ */
+export function toMcpClientConfig(serverName, cfg) {
+  if (!cfg || typeof cfg !== 'object') return null
+  const isHttp = cfg.type === 'http' || typeof cfg.url === 'string'
+  if (isHttp) {
+    if (typeof cfg.url !== 'string' || !cfg.url) return null
+    const headers = {}
+    for (const [key, value] of Object.entries(cfg.headers ?? {})) headers[key] = expandEnv(value)
+    return {
+      serverName,
+      transport: 'streamable-http',
+      url: expandEnv(cfg.url),
+      headers,
+    }
+  }
+  if (typeof cfg.command !== 'string' || !cfg.command) return null
+  const env = {}
+  for (const [key, value] of Object.entries(cfg.env ?? {})) env[key] = expandEnv(value)
+  return {
+    serverName,
+    transport: 'stdio',
+    command: cfg.command,
+    args: (cfg.args ?? []).map((a) => expandEnv(String(a))),
+    env,
+    cwd: typeof cfg.cwd === 'string' ? cfg.cwd : '',
+  }
+}
+
+/**
+ * 把各配置根的 .mcp.json 里的服务器动态注册为 dsh-mcp-client 实例。
+ * 这是「让 MCP 真正连接」的核心：不只是看板展示配置，而是真实启动连接。
+ * 每个服务器一个 ctx.plugin() 实例；父插件 fiber 卸载时自动清理。
+ * @param ctx - cordis 上下文（提供 plugin 能力与 logger）。
+ */
+async function registerDynamicMcp(ctx) {
+  const roots = allConfigRoots(ctx)
+  // 收集所有 .mcp.json 的服务器（按 serverName 去重，先扫到的优先）
+  const servers = new Map()
+  for (const r of roots) {
+    const mcpJson = readMcpJson(r.root)
+    if (!mcpJson || !mcpJson.servers || typeof mcpJson.servers !== 'object') continue
+    for (const [serverName, cfg] of Object.entries(mcpJson.servers)) {
+      if (!cfg || typeof cfg !== 'object') continue
+      if (cfg.disabled === true) continue
+      if (!servers.has(serverName)) servers.set(serverName, cfg)
+    }
+  }
+  // 跳过已在静态配置（cordis.patch.yml / 用户 cordis.yml）注册的服务器，避免 serverName 冲突
+  const staticNames = new Set(collectStaticMcp(ctx.loader).map((s) => s.serverName))
+  // 动态加载 dsh-mcp-client（命名空间插件：export { Config, apply, inject, name }）。
+  // 必须用 ctx.loader.import() 解析：该包安装在 DSH 运行时 node_modules，
+  // 插件进程直接 import('@deepseek-ai/dsh-mcp-client') 会解析失败（不在插件解析链上）。
+  let mcpClient
+  try {
+    mcpClient = await ctx.loader.import('@deepseek-ai/dsh-mcp-client')
+  } catch (error) {
+    ctx.logger?.warn(`dsh-claude-migrator: 无法加载 dsh-mcp-client: ${String(error?.message ?? error)}`)
+    return
+  }
+  for (const [serverName, cfg] of servers) {
+    if (staticNames.has(serverName)) continue
+    try {
+      const config = toMcpClientConfig(serverName, cfg)
+      if (!config) continue
+      // ctx.plugin() 创建 fiber 并挂到当前 fiber 下，随父 fiber dispose 自动清理
+      ctx.plugin(mcpClient, config)
+      ctx.logger?.info(`dsh-claude-migrator: 已动态注册 MCP 服务器 "${serverName}" (${config.transport})`)
+    } catch (error) {
+      ctx.logger?.warn(`dsh-claude-migrator: 注册 MCP 服务器 "${serverName}" 失败: ${String(error?.message ?? error)}`)
+    }
+  }
 }
 
 /** 汇总看板数据。 */
@@ -527,6 +640,12 @@ export function apply(ctx) {
       for (const dispose of disposers.splice(0)) dispose()
     }
   }, 'dsh-claude-migrator: skills')
+
+  // 动态注册 .mcp.json 里的 MCP 服务器为真实连接（dsh-mcp-client 实例）。
+  // 异步执行不阻塞插件激活；连接状态由 dsh-mcp-client 自行维护（含重连）。
+  registerDynamicMcp(ctx).catch((error) => {
+    ctx.logger?.warn(`dsh-claude-migrator: 动态注册 MCP 服务器失败: ${String(error?.message ?? error)}`)
+  })
 
   // 加载 workspace 级 hooks（.dsh/dsh-claude-migrator/hooks/*.js）
   const hookDisposers = registerWorkspaceHooks(ctx)
