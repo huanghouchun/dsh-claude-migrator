@@ -14,6 +14,8 @@ dsh-claude-migrator 扫描 **三层** 配置来源，都自动合并加载（同
 | **插件全局级** | 插件目录 `skills/`、`import/` | 发布自带 / 随插件分发 |
 | **workspace 项目级** | 项目根原有 Claude 配置 + `.dsh/dsh-claude-migrator/` | 每个项目各自的配置 |
 
+> **按工作区隔离**：看板只显示**当前工作区**的配置（+ 用户全局 + 插件级），切换工作区后看板自动跟随，不同项目的 skills/rules/MCP 互不串扰。工作区级 skills 由 DSH 原生 `dsh-skill-filesystem` 按项目根隔离加载。
+
 ### 用户全局级：读用户目录，而非插件目录
 
 **全局配置中心读取用户主目录**（`C:\Users\<你>\` 下），把 `~/.claude/skills`、`~/.agents/skills`、`~/.claude/rules`、`~/.mcp.json`、`~/.dsh/dsh-claude-migrator/` 都自动合并进看板与注册表：
@@ -351,9 +353,9 @@ Copy-Item ".claude" "<项目根>\.dsh\dsh-claude-migrator\.claude" -Recurse
 
 ### 技术说明
 
-- Host 端：`src/index.js` 注册 `/api/dsh-claude-dashboard` 路由（仅回环访问），扫描**用户级 + 工作区级 + 插件级**三层配置，从 tools 注册表统计 `mcp__` 前缀工具判断连接状态。
+- Host 端：`src/index.js` 注册 `/api/dsh-claude-dashboard` 路由（仅回环访问，支持 `?ws=<当前工作区路径>` 隔离），扫描**用户级 + 当前工作区级 + 插件级**三层配置，从 tools 注册表统计 `mcp__` 前缀工具判断连接状态。
 - MCP 真实连接：`.mcp.json` 的服务器在启动时被**动态注册为 dsh-mcp-client 实例**（`ctx.plugin` + `ctx.loader.import`），密钥占位符 `${VAR}` 自动展开为环境变量，带自动重连。
-- Browser 端：`status/client.js` 以 `window.__ModuleLoader__.load` 契约挂载侧边栏入口与看板（纯 DOM，无构建链）。
+- Browser 端：`status/client.js` 以 `window.__ModuleLoader__.load` 契约挂载侧边栏入口与看板（纯 DOM，无构建链）；注入 `workspaces`/`sessions` 服务解析**当前工作区**，请求时带 `?ws=` 实现配置隔离。
 - 状态判断：`disabled`（配置层）→ 禁用；有 `mcp__<server>` 工具 → 已连接；已启用但无工具 → 连接中。
 
 ---
