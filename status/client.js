@@ -28,6 +28,9 @@ window.__ModuleLoader__.load({
 		/** 看板 API（host 端 src/index.js 注册）。 */
 		var API = "/api/dsh-claude-dashboard";
 
+		/** 当前工作区绝对路径（按工作区隔离配置；由 apply 从 workspaces/sessions 服务计算）。 */
+		var currentWorkspacePath = undefined;
+
 		/** 稳定 data 属性。 */
 		var ENTRY_SELECTOR = "[data-dsh-cm-entry]";
 		var PANEL_SELECTOR = "[data-dsh-cm-panel]";
@@ -351,7 +354,49 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 拉取一次看板数据并渲染。
+		 * 计算当前工作区绝对路径（按工作区隔离配置）。
+		 * 优先取「当前会话所属工作区」；无当前会话时回退最近使用的工作区。
+		 * 拿不到时返回 undefined（host 端回退到全工作区合并视图）。
+		 */
+		function resolveCurrentWorkspacePath() {
+			try {
+				if (!window.__dshCmWsContext) return undefined
+				var ws = window.__dshCmWsContext.workspaces
+				var sessions = window.__dshCmWsContext.sessions
+				if (!ws || !sessions) return undefined
+				var list = ws.list && typeof ws.list.getSnapshot === "function" ? ws.list.getSnapshot() : undefined
+				var sessList = sessions.list && typeof sessions.list.getSnapshot === "function" ? sessions.list.getSnapshot() : undefined
+				var items = list && list.items ? list.items : []
+				// 1) 当前会话所属工作区
+				var current = sessList && sessList.current
+				if (current !== undefined) {
+					for (var i = 0; i < items.length; i++) {
+						var item = items[i]
+						if (item && item.sessionIds && item.sessionIds.indexOf(current) !== -1 && item.path) {
+							return item.path
+						}
+					}
+				}
+				// 2) 最近使用的工作区
+				var recentId = list && list.recentWorkspaceId
+				if (recentId !== undefined) {
+					for (var j = 0; j < items.length; j++) {
+						var candidate = items[j]
+						if (candidate && candidate.workspaceId === recentId && candidate.path) return candidate.path
+					}
+				}
+				// 3) 第一个有 path 的工作区
+				for (var k = 0; k < items.length; k++) {
+					if (items[k] && items[k].path) return items[k].path
+				}
+			} catch (error) {
+				console.warn("[dsh-claude-migrator] resolve current workspace failed:", error)
+			}
+			return undefined
+		}
+
+		/**
+		 * 拉取一次看板数据并渲染（按当前工作区隔离）。
 		 * 保证刷新动画最短可见时长：数据返回后若不足 MIN_SPIN_MS，延迟到满再渲染。
 		 */
 		function refreshPanel(panel) {
@@ -360,7 +405,11 @@ window.__ModuleLoader__.load({
 				var wait = Math.max(0, MIN_SPIN_MS - (Date.now() - start))
 				setTimeout(function () { renderPanel(panel, data) }, wait)
 			}
-			fetch(API, { headers: { accept: "application/json" } })
+			// 每次拉取都重新解析当前工作区（切换工作区后看板自动跟随）
+			var ws = resolveCurrentWorkspacePath()
+			currentWorkspacePath = ws
+			var url = API + (ws ? "?ws=" + encodeURIComponent(ws) : "")
+			fetch(url, { headers: { accept: "application/json" } })
 				.then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json() })
 				.then(render)
 				.catch(function () { render(undefined) })
@@ -394,6 +443,16 @@ window.__ModuleLoader__.load({
 			// 暴露给模块级 closePanel()（关闭按钮使用）
 			panelController = controller
 			var disposers = []
+
+			// 保存 workspaces/sessions 服务引用，供按当前工作区隔离配置使用
+			// （client 插件通过 inject 声明依赖，ctx.workspaces 为 dsh-client-runtime 提供）
+			window.__dshCmWsContext = {
+				workspaces: ctx.workspaces,
+				sessions: ctx.sessions,
+			}
+			disposers.push(function () {
+				window.__dshCmWsContext = undefined
+			})
 
 			/** 切换看板面板（侧边栏入口与工作区菜单共用）。 */
 			function togglePanel() {
@@ -497,9 +556,9 @@ window.__ModuleLoader__.load({
 		}
 
 		exports.apply = apply
-		// shell 按 inject 声明调度 apply 时机：与 package.json 的 dsh.client.inject 对应，
-		// 声明 client-runtime / connection / ui-settings，确保 UI 服务就绪后再激活。
-		exports.inject = ['slots', 'locale']
+		// shell 按 inject 声明调度 apply 时机：与 package.json 的 dsh.client.inject 对应。
+		// workspaces / sessions 由 dsh-client-runtime 提供，用于解析「当前工作区」实现配置隔离。
+		exports.inject = ['slots', 'locale', 'workspaces', 'sessions']
 		return module.exports
 	}
 })

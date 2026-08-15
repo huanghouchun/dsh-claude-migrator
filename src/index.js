@@ -82,26 +82,30 @@ function listRegisteredWorkspaces(ctx) {
  *        .claude/skills  .claude/rules  .mcp.json  CLAUDE.md
  *   2) 扩展区（<workspace>/.dsh/dsh-claude-migrator/）：
  *        skills/  rules/  hooks/  .mcp.json  CLAUDE.md  .claude/
- * 工作区来源：DSH 注册表（所有项目）+ cwd 兜底。
+ * 工作区来源：默认扫描 DSH 注册表（所有项目）+ cwd 兜底；
+ * 传入 wsPath 时**只扫该工作区**（按当前工作区隔离，不同项目配置互不干扰）。
  * @param ctx - cordis 上下文。
+ * @param wsPath - 指定的当前工作区绝对路径（可选）。
  * @returns {Array<{root, label}>} 工作区配置根目录数组。
  */
-function workspaceConfigRoots(ctx) {
+function workspaceConfigRoots(ctx, wsPath) {
   const roots = []
   const seenPaths = new Set()
-  // 1) 所有注册的工作区
-  for (const ws of listRegisteredWorkspaces(ctx)) {
-    if (seenPaths.has(ws)) continue
+  const push = (ws) => {
+    if (seenPaths.has(ws)) return
     seenPaths.add(ws)
     roots.push({ root: ws, label: 'workspace-root(.claude/.mcp.json)' })
     roots.push({ root: join(ws, '.dsh', 'dsh-claude-migrator'), label: 'workspace-ext(.dsh/dsh-claude-migrator)' })
   }
-  // 2) cwd 兜底（未注册的当前目录）
-  const cwdRoot = findWorkspaceRoot()
-  if (cwdRoot && !seenPaths.has(cwdRoot)) {
-    roots.push({ root: cwdRoot, label: 'workspace-root(.claude/.mcp.json)' })
-    roots.push({ root: join(cwdRoot, '.dsh', 'dsh-claude-migrator'), label: 'workspace-ext(.dsh/dsh-claude-migrator)' })
+  if (wsPath) {
+    // 指定工作区：只扫它，实现工作区级配置隔离
+    push(wsPath)
+    return roots
   }
+  // 未指定：所有注册的工作区 + cwd 兜底
+  for (const ws of listRegisteredWorkspaces(ctx)) push(ws)
+  const cwdRoot = findWorkspaceRoot()
+  if (cwdRoot) push(cwdRoot)
   return roots
 }
 
@@ -124,13 +128,15 @@ function userConfigRoots() {
 }
 
 /**
- * 汇总所有扫描根：工作区级 + 用户级 + 插件全局级（skills/ 与 import/）。
+ * 汇总所有扫描根：当前工作区级 + 用户级 + 插件全局级（skills/ 与 import/）。
+ * wsPath 传入时只扫该工作区（按当前工作区隔离配置）。
  * @param ctx - cordis 上下文。
+ * @param wsPath - 当前工作区绝对路径（可选）。
  * @returns {Array<{root, label}>} 全部配置根目录。
  */
-function allConfigRoots(ctx) {
+function allConfigRoots(ctx, wsPath) {
   return [
-    ...workspaceConfigRoots(ctx),
+    ...workspaceConfigRoots(ctx, wsPath),
     ...userConfigRoots(),
     { root: join(__dirname, '..'), label: 'plugin' },
   ]
@@ -450,10 +456,16 @@ async function registerDynamicMcp(ctx) {
   }
 }
 
-/** 汇总看板数据。 */
-export function buildDashboard(ctx) {
-  // 扫描全部层级：workspace 级（.dsh/.claude）+ 插件全局级（skills/ 与 import/）
-  const roots = allConfigRoots(ctx)
+/**
+ * 汇总看板数据。
+ * wsPath 为当前工作区绝对路径：传入时按该工作区隔离（只扫它的配置 + 用户全局 + 插件级）；
+ * 未传入时回退到「所有注册工作区」合并（兼容无浏览器的调用方/测试）。
+ * @param ctx - cordis 上下文。
+ * @param wsPath - 当前工作区绝对路径（可选）。
+ */
+export function buildDashboard(ctx, wsPath) {
+  // 扫描全部层级：当前工作区（.dsh/.claude）+ 用户全局（.agents/.claude）+ 插件级（skills/ 与 import/）
+  const roots = allConfigRoots(ctx, wsPath)
   const scanRoots = roots.map((r) => r.root)
   const allSkills = scanSkills(scanRoots)
   // rules：各层 .dsh/rules、.claude/rules 转 skill + rule-* 目录（rule- 前缀归入 rules 区块）
@@ -513,7 +525,8 @@ export function buildDashboard(ctx) {
   return {
     importRoot: IMPORT_ROOT,
     workspaceRoot: findWorkspaceRoot(),
-    workspaces: listRegisteredWorkspaces(ctx),
+    // 仅列出当前扫描的工作区（隔离视图）
+    workspaces: wsPath ? [wsPath] : listRegisteredWorkspaces(ctx),
     skills,
     rules,
     mcpJson: mcpJson ? { path: mcpJson.path, servers: dynamicServers.length } : null,
@@ -549,15 +562,21 @@ function collectSkillDefinitions(roots) {
 }
 
 /**
- * 把插件目录内的 skills 注册进 DSH skill 注册表（ctx.skills.register）。
- * 自包含实现：不依赖 dsh 内部包，任何安装位置都能工作。
+ * 注册全局 skills 进 DSH skill 注册表（ctx.skills.register）。
+ * 只注册**用户级 + 插件级**：用户全局（~/.agents/skills、~/.claude/skills）与插件自带。
+ * 工作区级 skills 由 DSH 原生 dsh-skill-filesystem 按项目根隔离加载，这里不重复注册，
+ * 避免所有工作区的配置互相串扰。
  * @param ctx - cordis 上下文（含 skills 服务）。
  * @returns 卸载函数数组。
  */
 function registerPluginSkills(ctx) {
   const disposers = []
-  // 扫描全部层级：workspace（.dsh/.claude）+ 插件全局（skills/ 与 import/）
-  const definitions = collectSkillDefinitions(allConfigRoots(ctx).map((r) => r.root))
+  // 仅用户级 + 插件级（不含工作区级 —— 工作区级由 DSH 原生按项目隔离）
+  const roots = [
+    ...userConfigRoots(),
+    { root: join(__dirname, '..'), label: 'plugin' },
+  ]
+  const definitions = collectSkillDefinitions(roots.map((r) => r.root))
   for (const def of definitions) {
     try {
       disposers.push(ctx.skills.register(def))
@@ -569,8 +588,10 @@ function registerPluginSkills(ctx) {
 }
 
 /**
- * 扫描工作区配置区的 hooks 目录并加载事件钩子。
- * 约定：<workspace>/.dsh/dsh-claude-migrator/hooks/*.js
+ * 扫描用户级配置区的 hooks 目录并加载事件钩子。
+ * 约定：<home>/.dsh/dsh-claude-migrator/hooks/*.js 与 <workspace>/.dsh/dsh-claude-migrator/hooks/*.js
+ * 工作区级 hooks 只在 wsPath 指定时加载（apply 时无当前工作区概念，故默认只加载用户级；
+ * 项目级 hooks 由用户按需在插件配置中显式声明，避免跨工作区串扰）。
  * 每个文件导出：
  *   - 默认导出函数 `(ctx) => disposer`（拿到 ctx 后自行 ctx.on(...) 注册）
  *   - 或命名导出 `{ event, handler }`（插件用 ctx.on(event, handler) 注册）
@@ -580,8 +601,9 @@ function registerPluginSkills(ctx) {
  */
 function registerWorkspaceHooks(ctx) {
   const disposers = []
-  const wsRoots = workspaceConfigRoots(ctx)
-  for (const { root } of wsRoots) {
+  // 用户级 hooks（全局配置中心扩展区）
+  const roots = userConfigRoots()
+  for (const { root } of roots) {
     const hooksDir = join(root, 'hooks')
     if (!existsSync(hooksDir)) continue
     for (const entry of readdirSync(hooksDir, { withFileTypes: true })) {
@@ -623,7 +645,14 @@ export function apply(ctx) {
       return
     }
     try {
-      writeJson(res, 200, buildDashboard(ctx))
+      // 按当前工作区隔离：浏览器端在 ?ws=<path> 传入当前工作区绝对路径
+      let wsPath
+      try {
+        const query = new URL(req.url ?? '/', 'http://x').searchParams
+        const raw = query.get('ws')
+        if (raw) wsPath = decodeURIComponent(raw)
+      } catch { /* 无 query 时保持 undefined */ }
+      writeJson(res, 200, buildDashboard(ctx, wsPath))
     } catch (error) {
       writeJson(res, 500, { error: String(error?.message ?? error) })
     }
